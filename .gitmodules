@@ -1,0 +1,6 @@
+[submodule "keypad4x4"]
+	path = keypad4x4
+	url = https://github.com/william-hazem/keypad4x4
+[submodule "components/keypad4x4"]
+	path = components/keypad4x4
+	url = https://github.com/william-hazem/keypad4x4
