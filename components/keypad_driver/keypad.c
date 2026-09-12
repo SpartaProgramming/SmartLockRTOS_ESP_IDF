@@ -46,10 +46,13 @@ static void intr_click_handler(void *args);
 static void keypad_scanner_task(void *arg);
 
 /**
- * @brief Wlacza podciagniecie wierszy i ISR - przygotowuje klawiature do
- * oczekiwania na wcisniecie klawisza. Wywolywane WYLACZNIE z kontekstu taska.
+ * @brief Przywraca podciagniecia pinow do stanu oczekiwania na klawisz
+ * (wiersze PULLUP, kolumny PULLDOWN) - BEZ wlaczania przerwania. Dzieki
+ * temu odczyt puszczenia klawisza (gpio_get_level na wierszu) dziala
+ * poprawnie elektrycznie, ale przerwanie mozna uzbroic dopiero po
+ * potwierdzonym, ustabilizowanym puszczeniu (patrz enable_row_interrupts).
  */
-static void turnon_rows(void) {
+static void set_rows_waiting_pulls(void) {
   for (int i = 4; i < 8; i++) /* kolumny */
   {
     gpio_set_pull_mode(_keypad_pins[i], GPIO_PULLDOWN_ONLY);
@@ -57,8 +60,22 @@ static void turnon_rows(void) {
   for (int i = 0; i < 4; i++) /* wiersze */
   {
     gpio_set_pull_mode(_keypad_pins[i], GPIO_PULLUP_ONLY);
+  }
+}
+
+static void enable_row_interrupts(void) {
+  for (int i = 0; i < 4; i++) {
     gpio_intr_enable(_keypad_pins[i]);
   }
+}
+
+/**
+ * @brief Wlacza podciagniecie wierszy i ISR - przygotowuje klawiature do
+ * oczekiwania na wcisniecie klawisza. Wywolywane WYLACZNIE z kontekstu taska.
+ */
+static void turnon_rows(void) {
+  set_rows_waiting_pulls();
+  enable_row_interrupts();
 }
 
 /**
@@ -147,13 +164,23 @@ static void keypad_scanner_task(void *arg) {
         break;
       }
     }
-    turnon_rows();
 
-    /* Czekamy na fizyczne puszczenie klawisza, zeby nie zarejestrowac
-     * wielokrotnie tego samego przytrzymanego klawisza. */
+    /* Przywracamy podciagniecia (wiersz PULLUP) OD RAZU, zeby puszczenie
+     * klawisza dalo sie poprawnie odczytac elektrycznie - ale przerwanie
+     * uzbrajamy dopiero PO potwierdzonym puszczeniu (ponizej), inaczej
+     * drgania stykow (bouncing) podczas trzymania/puszczania klawisza
+     * generuja kolejne zbocza opadajace, ktore ISR kolejkuje jako nowe
+     * wcisniecia i ten sam klawisz rejestruje sie wielokrotnie. */
+    set_rows_waiting_pulls();
+
     while (gpio_get_level(_keypad_pins[row]) == 0) {
       vTaskDelay(pdMS_TO_TICKS(10));
     }
+    /* Dodatkowy debounce puszczenia - stabilizacja stanu po ostatnim
+     * drganiu stykow, zanim ponownie uzbroimy przerwanie. */
+    vTaskDelay(pdMS_TO_TICKS(KEYPAD_DEBOUNCING));
+    xQueueReset(row_isr_queue);
+    enable_row_interrupts();
   }
 }
 
@@ -166,11 +193,10 @@ char keypad_getkey(void) {
   return key;
 }
 
-char keypad_waitkey(TickType_t timeout)
-{
-    char key = '\0';
-    xQueueReceive(keypad_queue, &key, timeout);
-    return key;
+char keypad_waitkey(TickType_t timeout) {
+  char key = '\0';
+  xQueueReceive(keypad_queue, &key, timeout);
+  return key;
 }
 
 void keypad_delete(void) {

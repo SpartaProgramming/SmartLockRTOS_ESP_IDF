@@ -87,7 +87,7 @@ void KeypadLock::taskLoop() {
                static_cast<unsigned>(_bufferLen));
       if (_notifyTask) {
         xTaskNotify(_notifyTask, static_cast<uint32_t>(KeypadEvent::CONFIRMED),
-                    eSetValueWithOverwrite);
+                    eSetBits);
       }
       // Bufor NIE jest tu czyszczony - to AccessController decyduje kiedy
       // wywolac clearBuffer(), po odczytaniu i zweryfikowaniu PINu.
@@ -96,7 +96,7 @@ void KeypadLock::taskLoop() {
       clearBuffer();
       if (_notifyTask) {
         xTaskNotify(_notifyTask, static_cast<uint32_t>(KeypadEvent::CANCELLED),
-                    eSetValueWithOverwrite);
+                    eSetBits);
       }
     } else {
       xSemaphoreTake(_bufferMutex, portMAX_DELAY);

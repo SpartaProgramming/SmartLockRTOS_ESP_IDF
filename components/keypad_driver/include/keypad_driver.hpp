@@ -13,15 +13,18 @@ extern "C" {
 }
 
 /**
- * @brief Wartosci przekazywane przez xTaskNotify do zarejestrowanego taska
- * (poprzez attachNotifyTask). Uzywane jako eSetValueWithOverwrite, wiec
- * odczytujcie je od razu po xTaskNotifyWait - kolejne zdarzenie nadpisze
- * poprzednie, jesli nie zostanie odebrane.
+ * @brief Bity przekazywane przez xTaskNotify(..., eSetBits) do
+ * zarejestrowanego taska (poprzez attachNotifyTask). To bity 0-1 - jesli ten
+ * sam task odbiera tez powiadomienia z innego zrodla (np. RfidLock, ktory
+ * uzywa bitow 2-3), obydwa moga przyjsc naraz w jednej wartosci zwroconej
+ * przez xTaskNotifyWait - sprawdzajcie kazdy bit osobno (nie jednym switch),
+ * bo eSetBits SUMUJE bitowo (OR), nie nadpisuje. Wywolujcie xTaskNotifyWait z
+ * ulBitsToClearOnExit=ULONG_MAX, zeby wyczyscic wszystko po odczycie.
  */
 enum class KeypadEvent : uint32_t {
   NONE = 0,
-  CONFIRMED = 1, ///< uzytkownik wcisnal '#' - PIN gotowy do odczytu
-  CANCELLED = 2, ///< uzytkownik wcisnal '*' - bufor zostal wyczyszczony
+  CONFIRMED = 1u << 0, ///< uzytkownik wcisnal '#' - PIN gotowy do odczytu
+  CANCELLED = 1u << 1, ///< uzytkownik wcisnal '*' - bufor zostal wyczyszczony
 };
 
 /**
