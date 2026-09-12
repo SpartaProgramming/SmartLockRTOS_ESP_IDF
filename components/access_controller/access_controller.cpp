@@ -16,9 +16,18 @@ static constexpr size_t kUserCount = sizeof(kUsers) / sizeof(kUsers[0]);
 
 static const char *kMasterPin = "12345";
 
-AccessController::AccessController(KeypadLock &keypad, RfidLock &rfid)
-    : _keypad(keypad), _rfid(rfid), _taskHandle(nullptr), _stateMutex(nullptr),
-      _state(LockState::LOCKED) {
+AccessController::AccessController(KeypadLock &keypad, RfidLock &rfid,
+                                   ContactSensor &contact,
+                                   PresenceSensor &presence,
+                                   TouchSensor &touch,
+                                   PressureSensor &pressure, ServoMotor &servo,
+                                   Display &display, SmartLed &ledGreen,
+                                   SmartLed &ledRed)
+    : _keypad(keypad), _rfid(rfid), _contact(contact), _presence(presence),
+      _touch(touch), _pressure(pressure), _servo(servo), _display(display),
+      _ledGreen(ledGreen), _ledRed(ledRed), _taskHandle(nullptr),
+      _stateMutex(nullptr), _state(LockState::LOCKED),
+      _wasUnlockedByUs(false) {
   _stateMutex = xSemaphoreCreateMutex();
 }
 
@@ -39,6 +48,10 @@ esp_err_t AccessController::begin() {
 
   _keypad.attachNotifyTask(_taskHandle);
   _rfid.attachNotifyTask(_taskHandle);
+  _contact.attachNotifyTask(_taskHandle);
+  _presence.attachNotifyTask(_taskHandle);
+  _touch.attachNotifyTask(_taskHandle);
+  _pressure.attachNotifyTask(_taskHandle);
 
   ESP_LOGI(TAG, "AccessController zainicjalizowany");
   return ESP_OK;
@@ -109,6 +122,34 @@ void AccessController::taskLoop() {
     if (notifiedValue & static_cast<uint32_t>(RfidEvent::CARD_REMOVED)) {
       ESP_LOGI(TAG, "Karta odsunieta");
     }
+
+    if (notifiedValue & static_cast<uint32_t>(ContactEvent::OPENED)) {
+      handleContactEvent(true);
+    }
+    if (notifiedValue & static_cast<uint32_t>(ContactEvent::CLOSED)) {
+      handleContactEvent(false);
+    }
+
+    if (notifiedValue & static_cast<uint32_t>(PresenceEvent::DETECTED)) {
+      handlePresenceEvent(true);
+    }
+    if (notifiedValue & static_cast<uint32_t>(PresenceEvent::CLEARED)) {
+      handlePresenceEvent(false);
+    }
+
+    if (notifiedValue & static_cast<uint32_t>(TouchEvent::TOUCHED)) {
+      handleTouchEvent(true);
+    }
+    if (notifiedValue & static_cast<uint32_t>(TouchEvent::RELEASED)) {
+      handleTouchEvent(false);
+    }
+
+    if (notifiedValue & static_cast<uint32_t>(PressureEvent::PRESSED)) {
+      handlePressureEvent(true);
+    }
+    if (notifiedValue & static_cast<uint32_t>(PressureEvent::RELEASED)) {
+      handlePressureEvent(false);
+    }
   }
 }
 
@@ -137,14 +178,68 @@ AuthResult AccessController::checkPin(const char *pin) {
 void AccessController::grantAccess(const UserInfo *user) {
   if (user) {
     ESP_LOGI(TAG, "Dostep przyznany: %s %s", user->firstName, user->lastName);
+    _display.showUserWelcome(user->firstName, user->lastName);
   } else {
     ESP_LOGI(TAG, "Dostep przyznany (PIN)");
+    _display.showAccessGranted();
   }
 
+  _servo.open();
+  _ledGreen.turnOn();
+  _ledRed.turnOff();
+  _wasUnlockedByUs = true;
   setState(LockState::UNLOCKED);
 }
 
 void AccessController::denyAccess() {
   ESP_LOGW(TAG, "Dostep odrzucony");
+  _display.showAccessDenied();
+  _ledRed.blink(200);
   setState(LockState::LOCKED);
+}
+
+void AccessController::handleContactEvent(bool opened) {
+  if (opened) {
+    ESP_LOGI(TAG, "Drzwi otwarte");
+    return;
+  }
+
+  ESP_LOGI(TAG, "Drzwi zamkniete");
+  // Auto-relock: jesli drzwi otworzono po naszym wlasnym odblokowaniu i
+  // teraz sie zamknely, zamykamy zasuwe z powrotem - jak stary
+  // handleContactSensor()/handleTiming() w doorLock.cpp.
+  if (_wasUnlockedByUs) {
+    _servo.close();
+    _ledGreen.turnOff();
+    _ledRed.turnOn();
+    _wasUnlockedByUs = false;
+    setState(LockState::LOCKED);
+    _display.showIdle();
+  }
+}
+
+void AccessController::handlePresenceEvent(bool detected) {
+  if (!detected) {
+    return;
+  }
+  ESP_LOGI(TAG, "Wykryto ruch (PIR) - wybudzam ekran");
+  _display.wakeUp();
+  _display.showIdle();
+  // TODO(auto-sleep): stary SystemController usypial ekran po czasie
+  // bezczynnosci (handleTimeout()) - nie portowane w tym kroku, bo
+  // wymagaloby zegara/timeoutu w petli taska zamiast blokujacego na stale
+  // xTaskNotifyWait(portMAX_DELAY).
+}
+
+void AccessController::handleTouchEvent(bool touched) {
+  // TODO(funkcja-dotyku): rola przycisku dotykowego w UX zamka nie jest
+  // jeszcze zdefiniowana - na razie tylko logujemy, zeby zdarzenie bylo
+  // widoczne i gotowe do podpiecia pod konkretne zachowanie.
+  ESP_LOGI(TAG, "Dotyk: %s", touched ? "wykryto" : "zwolniono");
+}
+
+void AccessController::handlePressureEvent(bool pressed) {
+  // TODO(funkcja-nacisku): rola czujnika nacisku w UX zamka nie jest
+  // jeszcze zdefiniowana - na razie tylko logujemy.
+  ESP_LOGI(TAG, "Nacisk: %s", pressed ? "wykryto" : "zwolniono");
 }

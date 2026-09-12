@@ -6,8 +6,11 @@
 #include "freertos/task.h"
 #include "keypad_driver.hpp"
 #include "presence_sensor.hpp"
+#include "pressure_sensor.hpp"
 #include "rfid_driver.hpp"
+#include "servo.hpp"
 #include "smart_led.hpp"
+#include "touch_sensor.hpp"
 
 #include <driver/spi_master.h>
 
@@ -17,13 +20,21 @@ static const char *_tag = "SmartLockMain";
 
 static KeypadLock keypad(Board::Keypad::pins.data());
 static RfidLock rfid(Board::Spi::host, Board::Rfid::cs, Board::Rfid::rst);
-static AccessController accessController(keypad, rfid);
 static Display display(Board::Spi::host, Board::LCD::cs, Board::LCD::dc,
                        Board::LCD::rst, Board::LCD::width, Board::LCD::height);
 static ContactSensor contactSensor(Board::Contact::pin);
 static SmartLed ledGreen(Board::Led::status_green);
 static SmartLed ledRed(Board::Led::status_red);
 static PresenceSensor presenceSensor(Board::PIR_sensor::pin);
+static TouchSensor touchSensor(Board::Touch::touch);
+static PressureSensor pressureSensor(Board::AnalogPressure::pin);
+static ServoMotor lockServo(Board::SERVO::zamek);
+// AccessController zalezy od wszystkich powyzszych obiektow (bierze je
+// przez referencje) - stad tworzony na koncu.
+static AccessController accessController(keypad, rfid, contactSensor,
+                                         presenceSensor, touchSensor,
+                                         pressureSensor, lockServo, display,
+                                         ledGreen, ledRed);
 
 static esp_err_t initSharedSpiBus() {
   spi_bus_config_t busConfig = {};
@@ -55,11 +66,6 @@ extern "C" void app_main(void) {
     ESP_LOGE(_tag, "Nie udalo sie uruchomic KeypadLock: %d", err);
   }
 
-  err = accessController.begin();
-  if (err != ESP_OK) {
-    ESP_LOGE(_tag, "Nie udalo sie uruchomic AccessController: %d", err);
-  }
-
   err = display.begin();
   if (err != ESP_OK) {
     ESP_LOGE(_tag, "Nie udalo sie uruchomic Display: %d", err);
@@ -81,6 +87,26 @@ extern "C" void app_main(void) {
   } else {
     ESP_LOGI(_tag, "Czujnik obecnosci (PIR): %s",
              presenceSensor.isPresent() ? "obecnosc" : "brak");
+  }
+
+  err = touchSensor.begin();
+  if (err != ESP_OK) {
+    ESP_LOGE(_tag, "Nie udalo sie uruchomic TouchSensor: %d", err);
+  }
+
+  err = pressureSensor.begin();
+  if (err != ESP_OK) {
+    ESP_LOGE(_tag, "Nie udalo sie uruchomic PressureSensor: %d", err);
+  }
+
+  err = lockServo.begin();
+  if (err != ESP_OK) {
+    ESP_LOGE(_tag, "Nie udalo sie uruchomic ServoMotor: %d", err);
+  }
+
+  err = accessController.begin();
+  if (err != ESP_OK) {
+    ESP_LOGE(_tag, "Nie udalo sie uruchomic AccessController: %d", err);
   }
 
   ESP_LOGI(_tag, "System zamka gotowy");
