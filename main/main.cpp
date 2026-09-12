@@ -1,8 +1,11 @@
+#include "access_controller.hpp"
+#include "contact_sensor.hpp"
+#include "display.hpp"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#include "access_controller.hpp"
 #include "keypad_driver.hpp"
+#include "presence_sensor.hpp"
 #include "rfid_driver.hpp"
 #include "smart_led.hpp"
 
@@ -15,6 +18,12 @@ static const char *_tag = "SmartLockMain";
 static KeypadLock keypad(Board::Keypad::pins.data());
 static RfidLock rfid(Board::Spi::host, Board::Rfid::cs, Board::Rfid::rst);
 static AccessController accessController(keypad, rfid);
+static Display display(Board::Spi::host, Board::LCD::cs, Board::LCD::dc,
+                       Board::LCD::rst, Board::LCD::width, Board::LCD::height);
+static ContactSensor contactSensor(Board::Contact::pin);
+static SmartLed ledGreen(Board::Led::status_green);
+static SmartLed ledRed(Board::Led::status_red);
+static PresenceSensor presenceSensor(Board::PIR_sensor::pin);
 
 static esp_err_t initSharedSpiBus() {
   spi_bus_config_t busConfig = {};
@@ -49,6 +58,29 @@ extern "C" void app_main(void) {
   err = accessController.begin();
   if (err != ESP_OK) {
     ESP_LOGE(_tag, "Nie udalo sie uruchomic AccessController: %d", err);
+  }
+
+  err = display.begin();
+  if (err != ESP_OK) {
+    ESP_LOGE(_tag, "Nie udalo sie uruchomic Display: %d", err);
+  } else {
+    display.showIdle();
+  }
+
+  err = contactSensor.begin();
+  if (err != ESP_OK) {
+    ESP_LOGE(_tag, "Nie udalo sie uruchomic ContactSensor: %d", err);
+  }
+
+  ledGreen.blink(500);
+  ledRed.blink(500);
+
+  err = presenceSensor.begin();
+  if (err != ESP_OK) {
+    ESP_LOGE(_tag, "Nie udalo sie uruchomic PresenceSensor: %d", err);
+  } else {
+    ESP_LOGI(_tag, "Czujnik obecnosci (PIR): %s",
+             presenceSensor.isPresent() ? "obecnosc" : "brak");
   }
 
   ESP_LOGI(_tag, "System zamka gotowy");

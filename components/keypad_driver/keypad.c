@@ -45,13 +45,6 @@ static TaskHandle_t scanner_task_handle = NULL;
 static void intr_click_handler(void *args);
 static void keypad_scanner_task(void *arg);
 
-/**
- * @brief Przywraca podciagniecia pinow do stanu oczekiwania na klawisz
- * (wiersze PULLUP, kolumny PULLDOWN) - BEZ wlaczania przerwania. Dzieki
- * temu odczyt puszczenia klawisza (gpio_get_level na wierszu) dziala
- * poprawnie elektrycznie, ale przerwanie mozna uzbroic dopiero po
- * potwierdzonym, ustabilizowanym puszczeniu (patrz enable_row_interrupts).
- */
 static void set_rows_waiting_pulls(void) {
   for (int i = 4; i < 8; i++) /* kolumny */
   {

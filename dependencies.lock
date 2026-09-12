@@ -9,13 +9,36 @@ dependencies:
       registry_url: https://components.espressif.com/
       type: service
     version: 4.0.0
+  espressif/esp_lvgl_port:
+    component_hash: d3c020b45c3dfc0d1706a83b63a1c34a6eb444a6e935f9afff79f92b7b94dcef
+    dependencies:
+    - name: idf
+      require: private
+      version: '>=5.2'
+    - name: lvgl/lvgl
+      registry_url: https://components.espressif.com
+      require: public
+      version: '>=8,<10'
+    source:
+      registry_url: https://components.espressif.com/
+      type: service
+    version: 2.9.0
   idf:
     source:
       type: idf
     version: 6.1.0
+  lvgl/lvgl:
+    component_hash: 948bff879a345149b83065535bbc4a026ce9f47498a22881e432a264b9098015
+    dependencies: []
+    source:
+      registry_url: https://components.espressif.com/
+      type: service
+    version: 8.3.11
 direct_dependencies:
 - abobija/rc522
+- espressif/esp_lvgl_port
 - idf
-manifest_hash: 0b2d64ffb2c937c6e57be6e0b19c28b2ecbee234938388561bf4aaf3802da006
+- lvgl/lvgl
+manifest_hash: 189b9996db192220d520bde748be94908207baa06a232e59ea25dfb844b5b85a
 target: esp32
 version: 3.0.0
