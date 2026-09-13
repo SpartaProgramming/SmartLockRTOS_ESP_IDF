@@ -25,21 +25,9 @@ enum class KeypadEvent : uint32_t {
   NONE = 0,
   CONFIRMED = 1u << 0, ///< uzytkownik wcisnal '#' - PIN gotowy do odczytu
   CANCELLED = 1u << 1, ///< uzytkownik wcisnal '*' - bufor zostal wyczyszczony
+  KEY_PRESSED = 1u << 12,
 };
 
-/**
- * @brief Active Object opakowujacy driver keypad.c. Wlasny task blokuje sie
- * na keypad_getkey(), buduje bufor wprowadzanego PIN-u i powiadamia
- * zarejestrowany task (task notification) o zatwierdzeniu ('#') lub
- * anulowaniu ('*').
- *
- * Bufor jest chroniony mutexem, bo jest czytany z innego taska
- * (np. AccessController) niz ten, ktory go zapisuje.
- *
- * WAZNE: po odebraniu KeypadEvent::CONFIRMED nalezy jak najszybciej
- * wywolac getBuffer() i clearBuffer() - dopoki bufor nie zostanie
- * wyczyszczony, kolejne wcisniete cyfry doklejaja sie do niego.
- */
 class KeypadLock {
 public:
   static constexpr size_t kMaxPinLen = 8;

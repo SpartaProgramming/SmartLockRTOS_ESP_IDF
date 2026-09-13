@@ -7,17 +7,17 @@
 /**
  * @brief Sterowanie serwem PWM (np. napd zasuwy zamka) przez natywny
  * peryferyjny LEDC ESP-IDF - port starego ServoMotor (Arduino ESP32Servo:
- * attach(pin, 400, 2400) / write(angle)) na ESP-IDF, bo biblioteka Servo
- * byla zaleznoscia warstwy Arduino, ktorej ten projekt nie uzywa.
+ * attach(pin, 400, 2400) / write(angle)) na ESP-IDF.
  *
- * Oprocz surowego writeAngle() (0-180 stopni, jak w oryginale) udostepnia
- * wyzszy interfejs open()/close() z konfigurowalnymi katami koncowymi -
- * domyslnie 160/70, czyli dokladnie wartosci z oryginalnego
- * DoorLock::openLatch()/closeLatch().
- *
- * UWAGA: klasa na sztywno uzywa LEDC_TIMER_0/LEDC_CHANNEL_0 (zaklada
- * jedno serwo w calym projekcie - napd zamka). Przy wielu serwach
- * naraz trzeba by przydzielac osobne kanaly/timery per instancja.
+ * CELOWO nie ma tu zadnej logiki czasowej/auto-zamykania - ServoMotor to
+ * "glupi" aktuator, ktory nie wie nic o czujnikach (np. kontaktronie
+ * drzwi). Decyzja "kiedy bezpiecznie zamknac" wymaga wiedzy o fizycznym
+ * stanie drzwi, wiec zyje wylacznie w AccessController (patrz tam
+ * handleContactEvent()/doorRelockTimeoutCallback() - zamyka WYLACZNIE po
+ * potwierdzeniu przez ContactSensor, ze drzwi sa faktycznie zamkniete).
+ * Wczesniejsza wersja miala tu wlasny timer auto-zamykajacy (openTimed())
+ * - zostala usunieta, bo mogla zatrzasnac zamek przy fizycznie otwartych
+ * drzwiach (timer nie mial jak tego sprawdzic).
  */
 class ServoMotor {
 public:
@@ -48,7 +48,9 @@ public:
   void open();
 
   /// Zamyka zamek (jedzie do kata ustawionego przez setCloseAngle(),
-  /// domyslnie 70 - jak w starym DoorLock::closeLatch()).
+  /// domyslnie 70 - jak w starym DoorLock::closeLatch()). Wywolujacy
+  /// (AccessController) jest odpowiedzialny za wywolanie tego WYLACZNIE,
+  /// gdy drzwi sa fizycznie zamkniete (patrz komentarz klasy).
   void close();
 
   void setOpenAngle(int angle);

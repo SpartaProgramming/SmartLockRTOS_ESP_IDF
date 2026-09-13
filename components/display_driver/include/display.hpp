@@ -31,9 +31,19 @@ public:
   void sleep();
 
   void drawHeader(const char *title);
-  void showIdle();
+
+  /// Ekran spoczynkowy - locked=true pokazuje stan LOCKED z promptem
+  /// wpisania PINu/przylozenia karty; locked=false pokazuje stan OPEN.
+  void showIdle(bool locked);
+
   void showUserWelcome(const char *firstName, const char *lastName);
+
+  /// Osobny szablon ekranu wpisywania PIN-u (nie applyView()) - gorna
+  /// belka pokazuje staly prompt "PIN:", a gwiazdki sa duzym, wlasnym
+  /// widgetem (patrz _pinStarsLabel). length=0 czysci gwiazdki, ale
+  /// zostaje na tym szablonie (nie wraca do idle).
   void showPasswordInput(uint8_t length);
+
   void showAccessGranted();
   void showAccessDenied();
 
@@ -51,8 +61,13 @@ private:
   esp_lcd_panel_handle_t _panel;
 
   lv_disp_t *_lvDisplay;
+
+  // Szablon ogolny (idle/welcome/granted/denied) - patrz applyView().
   lv_obj_t *_titleLabel;
   lv_obj_t *_headerLine;
   lv_obj_t *_line1Label;
   lv_obj_t *_line2Label;
+
+  // Osobny szablon ekranu wpisywania PIN-u - patrz showPasswordInput().
+  lv_obj_t *_pinStarsLabel;
 };

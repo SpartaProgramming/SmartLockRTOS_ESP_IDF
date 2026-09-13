@@ -136,7 +136,7 @@ void ContactSensor::taskLoop() {
     xSemaphoreGive(_stateMutex);
 
     if (!changed) {
-      continue; // odbicie styku / zaklocenie - stan sie nie zmienil
+      continue;
     }
 
     ESP_LOGI(TAG, "Kontaktron: %s", newState ? "otwarte" : "zamkniete");

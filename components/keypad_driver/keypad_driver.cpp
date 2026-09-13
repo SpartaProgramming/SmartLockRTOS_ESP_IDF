@@ -107,6 +107,12 @@ void KeypadLock::taskLoop() {
         ESP_LOGW(TAG, "Bufor PIN pelny, znak '%c' odrzucony", key);
       }
       xSemaphoreGive(_bufferMutex);
+
+      if (_notifyTask) {
+        xTaskNotify(_notifyTask,
+                    static_cast<uint32_t>(KeypadEvent::KEY_PRESSED),
+                    eSetBits);
+      }
     }
   }
 }

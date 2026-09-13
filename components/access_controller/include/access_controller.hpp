@@ -4,6 +4,7 @@
 #include <cstdint>
 
 #include <esp_err.h>
+#include <esp_timer.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
 #include <freertos/task.h>
@@ -39,15 +40,6 @@ struct UserInfo {
   const char *uid;
 };
 
-/**
- * @brief Centralny kontroler systemu - jeden task odbiera powiadomienia ze
- * WSZYSTKICH zrodel zdarzen (klawiatura, RFID, kontaktron drzwi, PIR,
- * dotyk, nacisk) przez xTaskNotifyWait (bity 0-11, patrz komentarze w
- * keypad_driver.hpp/rfid_driver.hpp/contact_sensor.hpp/
- * presence_sensor.hpp/touch_sensor.hpp/pressure_sensor.hpp), decyduje o
- * autoryzacji (PIN/UID wzgledem statycznej listy uzytkownikow) i steruje
- * wyjsciami: serwo zamka, wyswietlacz LVGL, diody LED statusu.
- */
 class AccessController {
 public:
   explicit AccessController(KeypadLock &keypad, RfidLock &rfid,
@@ -84,6 +76,14 @@ private:
   void handleTouchEvent(bool touched);
   void handlePressureEvent(bool pressed);
 
+  static void denyBlinkTimeoutCallback(void *arg);
+  static void doorRelockTimeoutCallback(void *arg);
+  static void presenceSleepTimeoutCallback(void *arg);
+  static void touchHoldTimeoutCallback(void *arg);
+  static void pinEntryTimeoutCallback(void *arg);
+
+  void resetManualEntry();
+
   KeypadLock &_keypad;
   RfidLock &_rfid;
   ContactSensor &_contact;
@@ -98,7 +98,19 @@ private:
   TaskHandle_t _taskHandle;
   SemaphoreHandle_t _stateMutex;
   LockState _state;
-  /// Czy aktualne odblokowanie zostalo zainicjowane przez nas (PIN/UID) -
-  /// sterownik auto-relocku w handleContactEvent() (patrz tam).
+
   bool _wasUnlockedByUs;
+
+  esp_timer_handle_t _denyBlinkTimer; // timer do migania czerwona dioda przy
+                                      // odrzuceniu dostepu
+  esp_timer_handle_t
+      _doorRelockTimer; // timer do ponownego zamknięcia zamka po jego otwarciu
+  esp_timer_handle_t
+      _presenceSleepTimer; // timer do usypiania ekranu po braku ruchu
+  esp_timer_handle_t _touchHoldTimer; // timer do obsługi przytrzymania dotyku
+  esp_timer_handle_t
+      _pinEntryTimeoutTimer; // timer do limitowania czasu wpisywania PIN-u
+
+  // Ustawiany na czas wpisywania PIN-u aby zostać przy tym ekranie.
+  bool _pinEntryActive;
 };

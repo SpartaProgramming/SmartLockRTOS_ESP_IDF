@@ -29,8 +29,7 @@ static PresenceSensor presenceSensor(Board::PIR_sensor::pin);
 static TouchSensor touchSensor(Board::Touch::touch);
 static PressureSensor pressureSensor(Board::AnalogPressure::pin);
 static ServoMotor lockServo(Board::SERVO::zamek);
-// AccessController zalezy od wszystkich powyzszych obiektow (bierze je
-// przez referencje) - stad tworzony na koncu.
+
 static AccessController accessController(keypad, rfid, contactSensor,
                                          presenceSensor, touchSensor,
                                          pressureSensor, lockServo, display,
@@ -70,7 +69,7 @@ extern "C" void app_main(void) {
   if (err != ESP_OK) {
     ESP_LOGE(_tag, "Nie udalo sie uruchomic Display: %d", err);
   } else {
-    display.showIdle();
+    display.showIdle(true); // poczatkowy stan - zablokowany
   }
 
   err = contactSensor.begin();
@@ -78,15 +77,9 @@ extern "C" void app_main(void) {
     ESP_LOGE(_tag, "Nie udalo sie uruchomic ContactSensor: %d", err);
   }
 
-  ledGreen.blink(500);
-  ledRed.blink(500);
-
   err = presenceSensor.begin();
   if (err != ESP_OK) {
     ESP_LOGE(_tag, "Nie udalo sie uruchomic PresenceSensor: %d", err);
-  } else {
-    ESP_LOGI(_tag, "Czujnik obecnosci (PIR): %s",
-             presenceSensor.isPresent() ? "obecnosc" : "brak");
   }
 
   err = touchSensor.begin();

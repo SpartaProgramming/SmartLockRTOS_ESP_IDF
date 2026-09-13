@@ -11,7 +11,7 @@ Display::Display(spi_host_device_t host, gpio_num_t cs, gpio_num_t dc,
     : _host(host), _cs(cs), _dc(dc), _rst(rst), _width(width), _height(height),
       _isOn(false), _ioHandle(nullptr), _panel(nullptr), _lvDisplay(nullptr),
       _titleLabel(nullptr), _headerLine(nullptr), _line1Label(nullptr),
-      _line2Label(nullptr) {}
+      _line2Label(nullptr), _pinStarsLabel(nullptr) {}
 
 Display::~Display() { end(); }
 
@@ -36,9 +36,6 @@ esp_err_t Display::begin() {
   panelConfig.rgb_ele_order = LCD_RGB_ELEMENT_ORDER_BGR;
   panelConfig.bits_per_pixel = 16;
 
-  // Wbudowany w esp_lcd (rdzen ESP-IDF, zero zewnetrznych zaleznosci)
-  // sterownik ST7789 - patrz komentarz klasy w display.hpp co do
-  // kompatybilnosci z ST7735S.
   err = esp_lcd_new_panel_st7789(_ioHandle, &panelConfig, &_panel);
   if (err != ESP_OK) {
     ESP_LOGE(TAG, "Blad tworzenia panelu (sterownik st7789): %d", err);
@@ -74,8 +71,7 @@ esp_err_t Display::begin() {
   dispCfg.hres = static_cast<uint32_t>(_width);
   dispCfg.vres = static_cast<uint32_t>(_height);
   dispCfg.monochrome = false;
-  dispCfg.flags.buff_dma =
-      false; // wspoldzielona magistrala SPI ma DMA wylaczone
+  dispCfg.flags.buff_dma = false;
   dispCfg.flags.sw_rotate = true;
 
   _lvDisplay = lvgl_port_add_disp(&dispCfg);
@@ -84,11 +80,6 @@ esp_err_t Display::begin() {
     return ESP_FAIL;
   }
 
-  // Po tym wywolaniu LVGL logicznie widzi ekran jako obrocony (160x128) i
-  // sam przeksztalca bufor przed przekazaniem go do panelu w jego
-  // natywnym ukladzie - stad ponizej zamieniamy TEZ nasze wlasne _width/
-  // _height, bo od teraz uzywamy ich tylko do ukladu naszych widgetow
-  // (np. szerokosc _headerLine), a nie do konfiguracji panelu.
   lv_disp_set_rotation(_lvDisplay, LV_DISP_ROT_90);
   {
     int landscapeWidth = _height;
@@ -100,7 +91,7 @@ esp_err_t Display::begin() {
   buildWidgets();
 
   _isOn = true;
-  ESP_LOGI(TAG, "Display (ST7735S, sterownik ST7789 + LVGL) zainicjalizowany");
+  ESP_LOGI(TAG, "Display (ST7735S oraz LVGL) zainicjalizowany");
   return ESP_OK;
 }
 
@@ -167,9 +158,21 @@ void Display::buildWidgets() {
                               LV_PART_MAIN);
   lv_obj_set_style_text_font(_line2Label, &lv_font_montserrat_16, LV_PART_MAIN);
 
+  // Osobny szablon ekranu wpisywania PIN-u - duza czcionka na gwiazdki,
+  // ukryty domyslnie (widoczny tylko przez showPasswordInput()).
+  _pinStarsLabel = lv_label_create(scr);
+  lv_obj_set_pos(_pinStarsLabel, 10, 55);
+  lv_obj_set_style_text_color(_pinStarsLabel, lv_color_white(), LV_PART_MAIN);
+  lv_obj_set_style_text_font(_pinStarsLabel, &lv_font_montserrat_28,
+                             LV_PART_MAIN);
+  lv_obj_add_flag(_pinStarsLabel, LV_OBJ_FLAG_HIDDEN);
+
   lvgl_port_unlock();
 }
 
+/**
+ * @brief Odkrywa standardowy widok ekranu, ukrywa wpisywanie PINu.
+ */
 void Display::applyView(const char *title, const char *line1, const char *line2,
                         lv_color_t color) {
   lvgl_port_lock(0);
@@ -180,15 +183,32 @@ void Display::applyView(const char *title, const char *line1, const char *line2,
   lv_obj_set_style_text_color(_line1Label, color, LV_PART_MAIN);
   lv_obj_set_style_text_color(_line2Label, color, LV_PART_MAIN);
 
+  lv_obj_clear_flag(_headerLine, LV_OBJ_FLAG_HIDDEN);
+  lv_obj_clear_flag(_line1Label, LV_OBJ_FLAG_HIDDEN);
+  lv_obj_clear_flag(_line2Label, LV_OBJ_FLAG_HIDDEN);
+  lv_obj_add_flag(_pinStarsLabel, LV_OBJ_FLAG_HIDDEN);
+
   lvgl_port_unlock();
 }
 
+/**
+ * @brief Rysuje naglowek ekranu.
+ * @param title Tytul naglowka.
+ */
 void Display::drawHeader(const char *title) {
   applyView(title, "", "", lv_color_hex(0x00FF00));
 }
 
-void Display::showIdle() {
-  applyView("DoorLock", "System ready", "", lv_color_hex(0x00FF00));
+/**
+ * @brief Pokazuje ekran spoczynkowy (idle) - LOCKED lub OPEN.
+ * @param locked true = LOCKED, false = OPEN.
+ */
+void Display::showIdle(bool locked) {
+  if (locked) {
+    applyView("LOCKED", "Enter PIN", "or use card", lv_color_hex(0x00FF00));
+  } else {
+    applyView("OPEN", "", "", lv_color_hex(0x00FF00));
+  }
 }
 
 void Display::showUserWelcome(const char *firstName, const char *lastName) {
@@ -204,7 +224,18 @@ void Display::showPasswordInput(uint8_t length) {
   }
   stars[n] = '\0';
 
-  applyView("Enter PIN or Tap card", stars, "", lv_color_white());
+  lvgl_port_lock(0);
+
+  lv_label_set_text(_titleLabel, "PIN:");
+  lv_obj_add_flag(_headerLine, LV_OBJ_FLAG_HIDDEN);
+  lv_obj_add_flag(_line1Label, LV_OBJ_FLAG_HIDDEN);
+  lv_obj_add_flag(_line2Label, LV_OBJ_FLAG_HIDDEN);
+
+  lv_obj_clear_flag(_pinStarsLabel, LV_OBJ_FLAG_HIDDEN);
+  lv_label_set_text(_pinStarsLabel, stars);
+  lv_obj_align(_pinStarsLabel, LV_ALIGN_CENTER, 0, 10);
+
+  lvgl_port_unlock();
 }
 
 void Display::showAccessGranted() {
