@@ -27,8 +27,9 @@ esp_err_t KeypadLock::begin() {
     return err;
   }
 
-  BaseType_t ok =
-      xTaskCreate(taskThunk, "keypad_lock_task", 3072, this, 5, &_taskHandle);
+  // Rdzen 1 (APP_CPU) - rdzen 0 zarezerwowany dla WiFi.
+  BaseType_t ok = xTaskCreatePinnedToCore(taskThunk, "keypad_lock_task", 3072,
+                                          this, 5, &_taskHandle, 1);
   if (ok != pdPASS) {
     ESP_LOGE(TAG, "Nie udalo sie utworzyc taska KeypadLock");
     keypad_delete();

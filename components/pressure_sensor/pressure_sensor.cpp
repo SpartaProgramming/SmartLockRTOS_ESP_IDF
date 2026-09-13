@@ -107,8 +107,9 @@ esp_err_t PressureSensor::begin() {
   _isPressed = _pressedBelowThreshold ? (_lastMv <= _thresholdMv)
                                       : (_lastMv >= _thresholdMv);
 
-  BaseType_t ok = xTaskCreate(taskThunk, "pressure_sensor_task", 3072, this, 5,
-                              &_taskHandle);
+  // Rdzen 1 (APP_CPU) - rdzen 0 zarezerwowany dla WiFi.
+  BaseType_t ok = xTaskCreatePinnedToCore(
+      taskThunk, "pressure_sensor_task", 3072, this, 5, &_taskHandle, 1);
   if (ok != pdPASS) {
     ESP_LOGE(TAG, "Nie udalo sie utworzyc taska PressureSensor");
     if (_caliHandle) {

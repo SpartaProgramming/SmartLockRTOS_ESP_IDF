@@ -31,12 +31,8 @@ esp_err_t ContactSensor::begin() {
 
   esp_err_t err = gpio_config(&cfg);
   if (err != ESP_OK) {
-    err = gpio_config(&cfg);
-    if (err != ESP_OK) {
-      ESP_LOGE(TAG, "Blad konfiguracji GPIO%d: %d", static_cast<int>(_pin),
-               err);
-      return err;
-    }
+    ESP_LOGE(TAG, "Blad konfiguracji GPIO%d: %d", static_cast<int>(_pin), err);
+    return err;
   }
 
   _isrQueue = xQueueCreate(4, sizeof(uint8_t));
@@ -64,8 +60,8 @@ esp_err_t ContactSensor::begin() {
   // Odczyt stanu poczatkowego bez czekania na pierwsze zbocze.
   _isOpen = gpio_get_level(_pin) != 0;
 
-  BaseType_t ok = xTaskCreate(taskThunk, "contact_sensor_task", 2048, this, 5,
-                              &_taskHandle);
+  BaseType_t ok = xTaskCreatePinnedToCore(taskThunk, "contact_sensor_task",
+                                          2048, this, 5, &_taskHandle, 1);
   if (ok != pdPASS) {
     ESP_LOGE(TAG, "Nie udalo sie utworzyc taska ContactSensor");
     gpio_isr_handler_remove(_pin);

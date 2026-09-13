@@ -1,22 +1,27 @@
 #include "access_controller.hpp"
 #include "contact_sensor.hpp"
+#include "diagnostic_manager.hpp"
 #include "display.hpp"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "keypad_driver.hpp"
+#include "nvs_flash.h"
 #include "presence_sensor.hpp"
 #include "pressure_sensor.hpp"
 #include "rfid_driver.hpp"
 #include "servo.hpp"
 #include "smart_led.hpp"
 #include "touch_sensor.hpp"
-
+#include "wifi_manager.hpp"
 #include <driver/spi_master.h>
 
 #include "pin_config.hpp"
 
 static const char *_tag = "SmartLockMain";
+
+static const char *kWifiSsid = "WiezaWawrzyny2.4G";
+static const char *kWifiPassword = "Wawrzyny19";
 
 static KeypadLock keypad(Board::Keypad::pins.data());
 static RfidLock rfid(Board::Spi::host, Board::Rfid::cs, Board::Rfid::rst);
@@ -29,6 +34,8 @@ static PresenceSensor presenceSensor(Board::PIR_sensor::pin);
 static TouchSensor touchSensor(Board::Touch::touch);
 static PressureSensor pressureSensor(Board::AnalogPressure::pin);
 static ServoMotor lockServo(Board::SERVO::zamek);
+static WifiManager wifiManager(kWifiSsid, kWifiPassword);
+static SystemDiagnostics diagnostics;
 
 static AccessController accessController(keypad, rfid, contactSensor,
                                          presenceSensor, touchSensor,
@@ -50,7 +57,23 @@ static esp_err_t initSharedSpiBus() {
 extern "C" void app_main(void) {
   ESP_LOGI(_tag, "Uruchamianie systemu Smart Lock...");
 
-  esp_err_t err = initSharedSpiBus();
+  diagnostics.start(5000, 1, 1);
+
+  // NVS wymagane przez WiFi (esp_wifi_init zapisuje/odczytuje kalibracje).
+  esp_err_t nvsErr = nvs_flash_init();
+  if (nvsErr == ESP_ERR_NVS_NO_FREE_PAGES ||
+      nvsErr == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+    ESP_ERROR_CHECK(nvs_flash_erase());
+    nvsErr = nvs_flash_init();
+  }
+  ESP_ERROR_CHECK(nvsErr);
+
+  esp_err_t err = wifiManager.begin();
+  if (err != ESP_OK) {
+    ESP_LOGE(_tag, "Nie udalo sie uruchomic WifiManager: %d", err);
+  }
+
+  err = initSharedSpiBus();
   if (err != ESP_OK) {
     ESP_LOGE(_tag, "Nie udalo sie zainicjalizowac magistrali SPI: %d", err);
   }

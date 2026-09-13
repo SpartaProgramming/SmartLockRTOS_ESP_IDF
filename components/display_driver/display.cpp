@@ -52,7 +52,8 @@ esp_err_t Display::begin() {
 
   esp_lcd_panel_disp_on_off(_panel, true);
 
-  const lvgl_port_cfg_t lvglCfg = ESP_LVGL_PORT_INIT_CONFIG();
+  lvgl_port_cfg_t lvglCfg = ESP_LVGL_PORT_INIT_CONFIG();
+  lvglCfg.task_affinity = 1; // rdzen 1 (APP_CPU) - rdzen 0 zarezerwowany dla WiFi
   err = lvgl_port_init(&lvglCfg);
   if (err != ESP_OK) {
     ESP_LOGE(TAG, "Blad inicjalizacji lvgl_port: %d", err);

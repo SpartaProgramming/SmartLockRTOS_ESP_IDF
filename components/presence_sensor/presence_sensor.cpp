@@ -9,8 +9,8 @@ constexpr int kDebounceMs = 30;
 }
 
 PresenceSensor::PresenceSensor(gpio_num_t pin)
-    : _pin(pin), _taskHandle(nullptr), _notifyTask(nullptr),
-      _isrQueue(nullptr), _stateMutex(nullptr), _isPresent(false) {
+    : _pin(pin), _taskHandle(nullptr), _notifyTask(nullptr), _isrQueue(nullptr),
+      _stateMutex(nullptr), _isPresent(false) {
   _stateMutex = xSemaphoreCreateMutex();
 }
 
@@ -26,8 +26,6 @@ esp_err_t PresenceSensor::begin() {
   cfg.pin_bit_mask = 1ULL << _pin;
   cfg.mode = GPIO_MODE_INPUT;
   cfg.intr_type = GPIO_INTR_ANYEDGE;
-  // Modul PIR ma wlasny aktywny stopien wyjsciowy - bez pull-up/pull-down,
-  // w przeciwienstwie do biernego kontaktronu (patrz komentarz klasy).
   cfg.pull_up_en = GPIO_PULLUP_DISABLE;
   cfg.pull_down_en = GPIO_PULLDOWN_DISABLE;
 
@@ -64,8 +62,9 @@ esp_err_t PresenceSensor::begin() {
   // Odczyt stanu poczatkowego bez czekania na pierwsze zbocze.
   _isPresent = gpio_get_level(_pin) != 0;
 
-  BaseType_t ok = xTaskCreate(taskThunk, "presence_sensor_task", 2048, this, 5,
-                              &_taskHandle);
+  // Rdzen 1 (APP_CPU) - rdzen 0 zarezerwowany dla WiFi.
+  BaseType_t ok = xTaskCreatePinnedToCore(taskThunk, "presence_sensor_task",
+                                          2048, this, 5, &_taskHandle, 1);
   if (ok != pdPASS) {
     ESP_LOGE(TAG, "Nie udalo sie utworzyc taska PresenceSensor");
     gpio_isr_handler_remove(_pin);
@@ -74,8 +73,7 @@ esp_err_t PresenceSensor::begin() {
     return ESP_ERR_NO_MEM;
   }
 
-  ESP_LOGI(TAG,
-           "PresenceSensor (GPIO%d) zainicjalizowany, stan poczatkowy: %s",
+  ESP_LOGI(TAG, "PresenceSensor (GPIO%d) zainicjalizowany, stan poczatkowy: %s",
            static_cast<int>(_pin), _isPresent ? "obecnosc" : "brak");
   return ESP_OK;
 }
@@ -92,9 +90,7 @@ void PresenceSensor::end() {
   }
 }
 
-void PresenceSensor::attachNotifyTask(TaskHandle_t task) {
-  _notifyTask = task;
-}
+void PresenceSensor::attachNotifyTask(TaskHandle_t task) { _notifyTask = task; }
 
 bool PresenceSensor::isPresent() const {
   xSemaphoreTake(_stateMutex, portMAX_DELAY);

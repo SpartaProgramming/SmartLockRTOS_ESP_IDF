@@ -112,8 +112,10 @@ esp_err_t keypad_initalize(gpio_num_t keypad_pins[8]) {
     gpio_set_direction(keypad_pins[i], GPIO_MODE_INPUT);
   }
 
-  BaseType_t ok = xTaskCreate(keypad_scanner_task, "keypad_scan",
-                              KEYPAD_STACKSIZE, NULL, 6, &scanner_task_handle);
+  // Rdzen 1 (APP_CPU) - rdzen 0 zarezerwowany dla WiFi.
+  BaseType_t ok =
+      xTaskCreatePinnedToCore(keypad_scanner_task, "keypad_scan",
+                              KEYPAD_STACKSIZE, NULL, 6, &scanner_task_handle, 1);
   if (ok != pdPASS) {
     ESP_LOGE(TAG, "Nie udalo sie utworzyc taska skanujacego");
     vQueueDelete(row_isr_queue);

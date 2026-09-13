@@ -65,8 +65,9 @@ esp_err_t TouchSensor::begin() {
   // Odczyt stanu poczatkowego bez czekania na pierwsze zbocze.
   _isTouched = gpio_get_level(_pin) != 0;
 
-  BaseType_t ok = xTaskCreate(taskThunk, "touch_sensor_task", 2048, this, 5,
-                              &_taskHandle);
+  // Rdzen 1 (APP_CPU) - rdzen 0 zarezerwowany dla WiFi.
+  BaseType_t ok = xTaskCreatePinnedToCore(taskThunk, "touch_sensor_task", 2048,
+                                          this, 5, &_taskHandle, 1);
   if (ok != pdPASS) {
     ESP_LOGE(TAG, "Nie udalo sie utworzyc taska TouchSensor");
     gpio_isr_handler_remove(_pin);
