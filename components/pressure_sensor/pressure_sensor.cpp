@@ -8,10 +8,6 @@ static const char *TAG = "PressureSensor";
 namespace {
 constexpr int kPollIntervalMs = 100;
 constexpr int kOversampleCount = 8;
-// TODO(kalibracja-czujnika): to tylko punkt startowy - zaleznie od
-// konkretnego czujnika/przetwornika nacisku (rozny zakres napiecia
-// wyjsciowego), sprawdz realne odczyty przez readMillivolts() i dostosuj
-// przez setThresholdMv().
 constexpr int kDefaultThresholdMv = 1650;
 } // namespace
 
@@ -54,8 +50,9 @@ void PressureSensor::initCalibration() {
     _caliHandle = handle;
     _caliEnabled = true;
   } else {
-    ESP_LOGW(TAG, "Kalibracja ADC niedostepna na tym egzemplarzu ESP32 (%d) "
-                  "- uzywam przyblizonego przeliczenia raw->mV",
+    ESP_LOGW(TAG,
+             "Kalibracja ADC niedostepna na tym egzemplarzu ESP32 (%d) "
+             "- uzywam przyblizonego przeliczenia raw->mV",
              err);
     _caliEnabled = false;
   }
@@ -68,8 +65,6 @@ int PressureSensor::rawToMv(int raw) const {
       return mv;
     }
   }
-  // Przyblizenie bez kalibracji - ADC ESP32 przy ADC_ATTEN_DB_12 ma zakres
-  // pelnej skali w okolicy ~3300mV (nieliniowo, stad tylko przyblizenie).
   return (raw * 3300) / 4095;
 }
 
@@ -108,8 +103,8 @@ esp_err_t PressureSensor::begin() {
                                       : (_lastMv >= _thresholdMv);
 
   // Rdzen 1 (APP_CPU) - rdzen 0 zarezerwowany dla WiFi.
-  BaseType_t ok = xTaskCreatePinnedToCore(
-      taskThunk, "pressure_sensor_task", 3072, this, 5, &_taskHandle, 1);
+  BaseType_t ok = xTaskCreatePinnedToCore(taskThunk, "pressure_sensor_task",
+                                          3072, this, 5, &_taskHandle, 1);
   if (ok != pdPASS) {
     ESP_LOGE(TAG, "Nie udalo sie utworzyc taska PressureSensor");
     if (_caliHandle) {
@@ -152,9 +147,7 @@ void PressureSensor::end() {
   }
 }
 
-void PressureSensor::attachNotifyTask(TaskHandle_t task) {
-  _notifyTask = task;
-}
+void PressureSensor::attachNotifyTask(TaskHandle_t task) { _notifyTask = task; }
 
 int PressureSensor::readMillivolts() const {
   xSemaphoreTake(_stateMutex, portMAX_DELAY);
@@ -216,8 +209,8 @@ void PressureSensor::taskLoop() {
     xSemaphoreTake(_stateMutex, portMAX_DELAY);
     _lastRaw = raw;
     _lastMv = mv;
-    newPressed = _pressedBelowThreshold ? (mv <= _thresholdMv)
-                                        : (mv >= _thresholdMv);
+    newPressed =
+        _pressedBelowThreshold ? (mv <= _thresholdMv) : (mv >= _thresholdMv);
     if (newPressed != _isPressed) {
       _isPressed = newPressed;
       changed = true;

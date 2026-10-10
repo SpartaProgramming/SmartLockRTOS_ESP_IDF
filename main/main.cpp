@@ -3,6 +3,8 @@
 #include "diagnostic_manager.hpp"
 #include "display.hpp"
 #include "esp_log.h"
+#include "esp_netif_sntp.h"
+#include "esp_sntp.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "keypad_driver.hpp"
@@ -12,6 +14,7 @@
 #include "rfid_driver.hpp"
 #include "servo.hpp"
 #include "smart_led.hpp"
+#include "telemetry_service.hpp"
 #include "touch_sensor.hpp"
 #include "wifi_manager.hpp"
 #include <driver/spi_master.h>
@@ -22,6 +25,12 @@ static const char *_tag = "SmartLockMain";
 
 static const char *kWifiSsid = "WiezaWawrzyny2.4G";
 static const char *kWifiPassword = "Wawrzyny19";
+
+static const char *kMqttUsername = "mqtt";
+static const char *kMqttPassword = "12345";
+
+static const char *kMqttBrokerUri = "mqtts://10.0.0.71:8883";
+static const char *kDeviceId = "smartlock01";
 
 static KeypadLock keypad(Board::Keypad::pins.data());
 static RfidLock rfid(Board::Spi::host, Board::Rfid::cs, Board::Rfid::rst);
@@ -37,10 +46,19 @@ static ServoMotor lockServo(Board::SERVO::zamek);
 static WifiManager wifiManager(kWifiSsid, kWifiPassword);
 static SystemDiagnostics diagnostics;
 
+static QueueHandle_t telemetryQueue =
+    xQueueCreate(10, sizeof(TelemetryMessage));
+static QueueHandle_t commandQueue = xQueueCreate(5, sizeof(SystemCommand));
+
+static TelemetryService telemetryService(kMqttBrokerUri, kDeviceId,
+                                         kMqttUsername, kMqttPassword,
+                                         telemetryQueue, commandQueue);
+
 static AccessController accessController(keypad, rfid, contactSensor,
                                          presenceSensor, touchSensor,
                                          pressureSensor, lockServo, display,
-                                         ledGreen, ledRed);
+                                         ledGreen, ledRed, telemetryQueue,
+                                         commandQueue);
 
 static esp_err_t initSharedSpiBus() {
   spi_bus_config_t busConfig = {};
@@ -71,6 +89,18 @@ extern "C" void app_main(void) {
   esp_err_t err = wifiManager.begin();
   if (err != ESP_OK) {
     ESP_LOGE(_tag, "Nie udalo sie uruchomic WifiManager: %d", err);
+  }
+
+  esp_sntp_config_t sntpCfg = ESP_NETIF_SNTP_DEFAULT_CONFIG("pool.ntp.org");
+  esp_netif_sntp_init(&sntpCfg);
+  esp_netif_sntp_sync_wait(
+      pdMS_TO_TICKS(10000)); // czekaj do 10s na synchronizacje
+
+  // Rdzen 0 - zostaje razem z WiFi (patrz komentarz klasy w
+  // telemetry_service.hpp), w odroznieniu od reszty aplikacji ponizej.
+  err = telemetryService.begin(0);
+  if (err != ESP_OK) {
+    ESP_LOGE(_tag, "Nie udalo sie uruchomic TelemetryService: %d", err);
   }
 
   err = initSharedSpiBus();

@@ -1,9 +1,13 @@
 #include "access_controller.hpp"
 
 #include <climits>
+#include <cstdio>
 #include <cstring>
 
 #include <esp_log.h>
+#include <esp_system.h>
+
+#include "telemetry_types.hpp"
 
 static const char *TAG = "AccessController";
 
@@ -24,6 +28,10 @@ constexpr int kPresenceSleepTimeoutSec = 20;
 constexpr int kTouchHoldThresholdSec = 2;
 constexpr int kPinEntryTimeoutSec =
     10; // brak nowego znaku -> czysc i wroc do idle
+constexpr uint32_t kCommandPollIntervalMs =
+    200; // jak czesto sprawdzamy commandQueue miedzy powiadomieniami
+constexpr int kRebootDelayMs =
+    1000; // czas na wyslanie telemetrii przed restartem
 } // namespace
 
 AccessController::AccessController(KeypadLock &keypad, RfidLock &rfid,
@@ -31,14 +39,17 @@ AccessController::AccessController(KeypadLock &keypad, RfidLock &rfid,
                                    PresenceSensor &presence, TouchSensor &touch,
                                    PressureSensor &pressure, ServoMotor &servo,
                                    Display &display, SmartLed &ledGreen,
-                                   SmartLed &ledRed)
+                                   SmartLed &ledRed,
+                                   QueueHandle_t telemetryQueue,
+                                   QueueHandle_t commandQueue)
     : _keypad(keypad), _rfid(rfid), _contact(contact), _presence(presence),
       _touch(touch), _pressure(pressure), _servo(servo), _display(display),
       _ledGreen(ledGreen), _ledRed(ledRed), _taskHandle(nullptr),
       _stateMutex(nullptr), _state(LockState::LOCKED), _wasUnlockedByUs(false),
       _denyBlinkTimer(nullptr), _doorRelockTimer(nullptr),
       _presenceSleepTimer(nullptr), _touchHoldTimer(nullptr),
-      _pinEntryTimeoutTimer(nullptr), _pinEntryActive(false) {
+      _pinEntryTimeoutTimer(nullptr), _pinEntryActive(false),
+      _telemetryQueue(telemetryQueue), _commandQueue(commandQueue) {
   _stateMutex = xSemaphoreCreateMutex();
 }
 
@@ -151,6 +162,14 @@ void AccessController::setState(LockState newState) {
   xSemaphoreTake(_stateMutex, portMAX_DELAY);
   _state = newState;
   xSemaphoreGive(_stateMutex);
+
+  // Telemetria stanu tylko dla LOCKED/UNLOCKED - AUTHENTICATING to stan
+  // przejsciowy, nie snapshot warty publikacji (patrz komentarz w .hpp).
+  if (newState == LockState::LOCKED) {
+    sendTelemetryState(true);
+  } else if (newState == LockState::UNLOCKED) {
+    sendTelemetryState(false);
+  }
 }
 
 void AccessController::taskThunk(void *pParam) {
@@ -160,9 +179,15 @@ void AccessController::taskThunk(void *pParam) {
 void AccessController::taskLoop() {
   while (true) {
     uint32_t notifiedValue = 0;
-    if (xTaskNotifyWait(0, ULONG_MAX, &notifiedValue, portMAX_DELAY) !=
-        pdTRUE) {
-      continue;
+    // Timeout ograniczony (nie portMAX_DELAY) - dzieki temu petla co
+    // kCommandPollIntervalMs wraca i sprawdza commandQueue (komendy
+    // zdalne z MQTT/HA), nawet gdy zaden czujnik nic nie zglasza.
+    BaseType_t notified =
+        xTaskNotifyWait(0, ULONG_MAX, &notifiedValue,
+                        pdMS_TO_TICKS(kCommandPollIntervalMs));
+
+    if (notified != pdTRUE) {
+      notifiedValue = 0;
     }
 
     if (notifiedValue & static_cast<uint32_t>(KeypadEvent::KEY_PRESSED)) {
@@ -243,6 +268,15 @@ void AccessController::taskLoop() {
     if (notifiedValue & static_cast<uint32_t>(PressureEvent::RELEASED)) {
       handlePressureEvent(false);
     }
+
+    // Komendy zdalne (MQTT/HA) - nieblokujaco, niezaleznie od tego, czy
+    // powyzej przyszlo jakies powiadomienie z czujnikow.
+    if (_commandQueue) {
+      SystemCommand cmd;
+      if (xQueueReceive(_commandQueue, &cmd, 0) == pdTRUE) {
+        handleRemoteCommand(cmd);
+      }
+    }
   }
 }
 
@@ -274,9 +308,14 @@ void AccessController::grantAccess(const UserInfo *user) {
   if (user) {
     ESP_LOGI(TAG, "Dostep przyznany: %s %s", user->firstName, user->lastName);
     _display.showUserWelcome(user->firstName, user->lastName);
+
+    char detail[64];
+    snprintf(detail, sizeof(detail), "%s %s", user->firstName, user->lastName);
+    sendTelemetryEvent("ACCESS_GRANTED", detail);
   } else {
     ESP_LOGI(TAG, "Dostep przyznany (PIN)");
     _display.showAccessGranted();
+    sendTelemetryEvent("ACCESS_GRANTED", "PIN");
   }
 
   _servo.open();
@@ -293,6 +332,7 @@ void AccessController::denyAccess() {
            kDenyBlinkDurationSec);
   _display.showAccessDenied();
   _ledRed.blink(kDenyBlinkIntervalMs);
+  sendTelemetryEvent("ACCESS_DENIED", "");
 
   if (_denyBlinkTimer) {
     esp_timer_stop(_denyBlinkTimer);
@@ -312,6 +352,7 @@ void AccessController::denyBlinkTimeoutCallback(void *arg) {
 void AccessController::handleContactEvent(bool opened) {
   if (opened) {
     ESP_LOGI(TAG, "Drzwi otwarte");
+    sendTelemetryEvent("DOOR_OPENED", "");
     if (_doorRelockTimer) {
       // Drzwi znow otwarte - anuluj oczekujace zamkniecie zasuwy.
       esp_timer_stop(_doorRelockTimer);
@@ -320,6 +361,7 @@ void AccessController::handleContactEvent(bool opened) {
   }
 
   ESP_LOGI(TAG, "Drzwi zamkniete");
+  sendTelemetryEvent("DOOR_CLOSED", "");
   if (_wasUnlockedByUs && _doorRelockTimer) {
     ESP_LOGI(TAG, "Zwloka %ds przed zamknieciem zasuwy", kDoorRelockDelaySec);
     esp_timer_stop(_doorRelockTimer);
@@ -395,11 +437,18 @@ void AccessController::touchHoldTimeoutCallback(void *arg) {
   self->_wasUnlockedByUs = true;
   self->setState(LockState::UNLOCKED);
   self->_display.showIdle(false);
+  self->sendTelemetryEvent("ACCESS_GRANTED", "TOUCH");
 }
 
 void AccessController::handlePressureEvent(bool pressed) {
-
   ESP_LOGI(TAG, "Nacisk: %s", pressed ? "wykryto" : "zwolniono");
+  if (!pressed) {
+    return;
+  }
+
+  char detail[16];
+  snprintf(detail, sizeof(detail), "%d mV", _pressure.readMillivolts());
+  sendTelemetryEvent("PRESSURE_DETECTED", detail);
 }
 
 void AccessController::pinEntryTimeoutCallback(void *arg) {
@@ -414,5 +463,97 @@ void AccessController::resetManualEntry() {
   _pinEntryActive = false;
   if (_pinEntryTimeoutTimer) {
     esp_timer_stop(_pinEntryTimeoutTimer);
+  }
+}
+
+void AccessController::sendTelemetryEvent(const char *eventName,
+                                          const char *detail) {
+  if (!_telemetryQueue) {
+    return;
+  }
+
+  TelemetryMessage msg = {};
+  msg.type = TelemetryMessageType::EVENT_LOG;
+  msg.timestampMs = esp_timer_get_time() / 1000;
+  strncpy(msg.eventName, eventName, sizeof(msg.eventName) - 1);
+  strncpy(msg.eventDetail, detail ? detail : "", sizeof(msg.eventDetail) - 1);
+
+  // Nieblokujaco (timeout=0) - AccessController nigdy nie czeka na
+  // TelemetryService; jesli kolejka jest pelna, zdarzenie przepada z
+  // ostrzezeniem zamiast zaciac task obslugujacy zamek.
+  if (xQueueSend(_telemetryQueue, &msg, 0) != pdTRUE) {
+    ESP_LOGW(TAG, "telemetryQueue pelna - zdarzenie '%s' pominiete",
+             eventName);
+  }
+}
+
+void AccessController::handleRemoteCommand(const SystemCommand &cmd) {
+  switch (cmd.id) {
+  case SystemCommandId::UNLOCK: {
+    ESP_LOGI(TAG, "Komenda zdalna: UNLOCK");
+    resetManualEntry();
+    _display.showAccessGranted();
+    _servo.open();
+    _ledGreen.turnOn();
+    _ledRed.turnOff();
+    _wasUnlockedByUs = true;
+    setState(LockState::UNLOCKED);
+    sendTelemetryEvent("ACCESS_GRANTED", "REMOTE");
+    break;
+  }
+
+  case SystemCommandId::LOCK: {
+    ESP_LOGI(TAG, "Komenda zdalna: LOCK");
+    if (_contact.isOpen()) {
+      // Bezpieczenstwo: NIGDY nie zamykamy zamka na fizycznie otwartych
+      // drzwiach (patrz komentarz klasy w servo.hpp) - oznaczamy tylko
+      // "zostalo odblokowane" tak, zeby istniejacy, bezpieczny mechanizm
+      // (handleContactEvent()/doorRelockTimeoutCallback()) zamknal zamek
+      // sam, gdy drzwi faktycznie sie zamkna.
+      ESP_LOGW(TAG, "LOCK odroczone - drzwi otwarte, zamknie sie "
+                    "automatycznie po ich zamknieciu");
+      _wasUnlockedByUs = true;
+      sendTelemetryEvent("LOCK_DEFERRED", "door open");
+    } else {
+      _servo.close();
+      _ledGreen.turnOff();
+      _ledRed.turnOn();
+      _wasUnlockedByUs = false;
+      setState(LockState::LOCKED);
+      _display.showIdle(true);
+      sendTelemetryEvent("LOCKED", "REMOTE");
+    }
+    break;
+  }
+
+  case SystemCommandId::REBOOT: {
+    ESP_LOGW(TAG, "Komenda zdalna: REBOOT - restart za %dms", kRebootDelayMs);
+    sendTelemetryEvent("REBOOT_REQUESTED", cmd.parameter);
+    vTaskDelay(pdMS_TO_TICKS(kRebootDelayMs));
+    esp_restart();
+    break;
+  }
+
+  case SystemCommandId::UNKNOWN:
+  default:
+    // TelemetryService juz odfiltrowuje nierozpoznane komendy przed
+    // wystawieniem ich do commandQueue - to tylko zabezpieczenie.
+    ESP_LOGW(TAG, "Nieznana komenda zdalna - ignoruje");
+    break;
+  }
+}
+
+void AccessController::sendTelemetryState(bool locked) {
+  if (!_telemetryQueue) {
+    return;
+  }
+
+  TelemetryMessage msg = {};
+  msg.type = TelemetryMessageType::STATE_UPDATE;
+  msg.timestampMs = esp_timer_get_time() / 1000;
+  msg.locked = locked;
+
+  if (xQueueSend(_telemetryQueue, &msg, 0) != pdTRUE) {
+    ESP_LOGW(TAG, "telemetryQueue pelna - aktualizacja stanu pominieta");
   }
 }

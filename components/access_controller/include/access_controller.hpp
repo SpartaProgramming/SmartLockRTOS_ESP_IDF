@@ -6,6 +6,7 @@
 #include <esp_err.h>
 #include <esp_timer.h>
 #include <freertos/FreeRTOS.h>
+#include <freertos/queue.h>
 #include <freertos/semphr.h>
 #include <freertos/task.h>
 
@@ -17,6 +18,7 @@
 #include "rfid_driver.hpp"
 #include "servo.hpp"
 #include "smart_led.hpp"
+#include "telemetry_types.hpp"
 #include "touch_sensor.hpp"
 
 enum class LockState {
@@ -42,11 +44,16 @@ struct UserInfo {
 
 class AccessController {
 public:
+  /// telemetryQueue/commandQueue moga byc nullptr, jesli TelemetryService
+  /// nie jest uzywany w danej konfiguracji - wysylka telemetrii i odbior
+  /// komend zdalnych sa wtedy po prostu pomijane.
   explicit AccessController(KeypadLock &keypad, RfidLock &rfid,
                             ContactSensor &contact, PresenceSensor &presence,
                             TouchSensor &touch, PressureSensor &pressure,
                             ServoMotor &servo, Display &display,
-                            SmartLed &ledGreen, SmartLed &ledRed);
+                            SmartLed &ledGreen, SmartLed &ledRed,
+                            QueueHandle_t telemetryQueue = nullptr,
+                            QueueHandle_t commandQueue = nullptr);
   ~AccessController();
 
   AccessController(const AccessController &) = delete;
@@ -76,6 +83,15 @@ private:
   void handleTouchEvent(bool touched);
   void handlePressureEvent(bool pressed);
 
+  /// Wykonuje komende odebrana zdalnie (MQTT/HA) przez commandQueue.
+  /// LOCK respektuje TA SAMA zasade bezpieczenstwa co reszta systemu -
+  /// nigdy nie zamyka fizycznie zamka, gdy kontaktron pokazuje otwarte
+  /// drzwi (patrz komentarz klasy servo.hpp) - w takim przypadku tylko
+  /// oznacza _wasUnlockedByUs=true, zeby istniejacy, bezpieczny mechanizm
+  /// (handleContactEvent()/doorRelockTimeoutCallback()) zamknal zamek
+  /// automatycznie, gdy drzwi faktycznie sie zamkna.
+  void handleRemoteCommand(const SystemCommand &cmd);
+
   static void denyBlinkTimeoutCallback(void *arg);
   static void doorRelockTimeoutCallback(void *arg);
   static void presenceSleepTimeoutCallback(void *arg);
@@ -83,6 +99,16 @@ private:
   static void pinEntryTimeoutCallback(void *arg);
 
   void resetManualEntry();
+
+  /// Wysyla TelemetryMessage(EVENT_LOG) do telemetryQueue (nieblokujaco -
+  /// jesli kolejka jest pelna albo telemetryQueue==nullptr, zdarzenie po
+  /// prostu przepada, z ostrzezeniem w logu). detail moze byc nullptr.
+  void sendTelemetryEvent(const char *eventName, const char *detail);
+
+  /// Wysyla TelemetryMessage(STATE_UPDATE) - wolane z setState() dla
+  /// LOCKED/UNLOCKED (AUTHENTICATING pomijamy, bo to stan przejsciowy,
+  /// nie snapshot warty publikacji).
+  void sendTelemetryState(bool locked);
 
   KeypadLock &_keypad;
   RfidLock &_rfid;
@@ -113,4 +139,12 @@ private:
 
   // Ustawiany na czas wpisywania PIN-u aby zostać przy tym ekranie.
   bool _pinEntryActive;
+
+  /// OUT - do TelemetryService (rdzen 0). Moze byc nullptr - patrz
+  /// konstruktor.
+  QueueHandle_t _telemetryQueue;
+
+  /// IN - komendy zdalne (MQTT/HA) z TelemetryService. Odczytywana
+  /// nieblokujaco w taskLoop(). Moze byc nullptr - patrz konstruktor.
+  QueueHandle_t _commandQueue;
 };
