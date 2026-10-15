@@ -2,6 +2,7 @@
 
 #include <cstdio>
 #include <cstring>
+#include <strings.h>
 
 #include <cJSON.h>
 #include <esp_log.h>
@@ -24,13 +25,36 @@ esp_err_t createTimer(esp_timer_cb_t callback, void *arg, const char *name,
   args.name = name;
   return esp_timer_create(&args, out);
 }
+
+// event->topic NIE jest zakonczone '\0' - porownujemy dlugosc i zawartosc
+// razem, zeby nie dopasowac przypadkiem dluzszego topicu majacego topic
+// jako prefiks.
+bool topicEquals(const esp_mqtt_event_handle_t event, const char *topic) {
+  return topic[0] != '\0' && event->topic_len > 0 &&
+         static_cast<size_t>(event->topic_len) == strlen(topic) &&
+         strncmp(event->topic, topic, event->topic_len) == 0;
+}
+
+// event->data NIE jest zakonczone '\0' - kopiujemy do lokalnego bufora
+// przed parsowaniem przez cJSON_Parse (ktore oczekuje C-stringa).
+void copyPayload(char *out, size_t outLen, const char *data, int dataLen) {
+  int toCopy = (dataLen < static_cast<int>(outLen) - 1)
+                   ? dataLen
+                   : static_cast<int>(outLen) - 1;
+  if (toCopy < 0) {
+    toCopy = 0;
+  }
+  memcpy(out, data, toCopy);
+  out[toCopy] = '\0';
+}
 } // namespace
 
 TelemetryService::TelemetryService(const char *brokerUri, const char *deviceId,
                                    const char *mqttUsername,
                                    const char *mqttPassword,
                                    QueueHandle_t telemetryQueue,
-                                   QueueHandle_t commandQueue)
+                                   QueueHandle_t commandQueue,
+                                   const char *visionDeviceId)
     : _telemetryQueue(telemetryQueue), _commandQueue(commandQueue),
       _client(nullptr), _taskHandle(nullptr), _lastKnownLocked(true),
       _haveLastKnownLocked(false), _stateIntervalTimer(nullptr),
@@ -52,6 +76,12 @@ TelemetryService::TelemetryService(const char *brokerUri, const char *deviceId,
            "smartlock/%s/diagnostics", _deviceId);
   snprintf(_topicCommand, sizeof(_topicCommand), "smartlock/%s/command",
            _deviceId);
+
+  _topicVisionEvent[0] = '\0';
+  if (visionDeviceId && visionDeviceId[0] != '\0') {
+    snprintf(_topicVisionEvent, sizeof(_topicVisionEvent), "smartlock/%s/event",
+             visionDeviceId);
+  }
 }
 
 TelemetryService::~TelemetryService() { end(); }
@@ -279,6 +309,12 @@ void TelemetryService::onMqttEvent(esp_mqtt_event_handle_t event) {
   case MQTT_EVENT_CONNECTED:
     ESP_LOGI(TAG, "Polaczono z brokerem MQTT");
     esp_mqtt_client_subscribe(_client, _topicCommand, 1 /*QoS1*/);
+    if (_topicVisionEvent[0] != '\0') {
+      int msgId =
+          esp_mqtt_client_subscribe(_client, _topicVisionEvent, 1 /*QoS1*/);
+      ESP_LOGI(TAG, "Subskrypcja kamery %s (msg_id=%d)", _topicVisionEvent,
+               msgId);
+    }
     _statePending = true; // natychmiastowy snapshot po (re)polaczeniu
     break;
 
@@ -286,14 +322,15 @@ void TelemetryService::onMqttEvent(esp_mqtt_event_handle_t event) {
     ESP_LOGW(TAG, "Rozlaczono z brokerem MQTT");
     break;
 
+  case MQTT_EVENT_SUBSCRIBED:
+    ESP_LOGI(TAG, "Broker potwierdzil subskrypcje (msg_id=%d)", event->msg_id);
+    break;
+
   case MQTT_EVENT_DATA:
-    // event->topic NIE jest zakonczone '\0' - porownujemy dlugosc i
-    // zawartosc razem, zeby nie dopasowac przypadkiem dluzszego topicu
-    // majacego _topicCommand jako prefiks.
-    if (event->topic_len > 0 &&
-        static_cast<size_t>(event->topic_len) == strlen(_topicCommand) &&
-        strncmp(event->topic, _topicCommand, event->topic_len) == 0) {
+    if (topicEquals(event, _topicCommand)) {
       handleIncomingCommand(event->data, event->data_len);
+    } else if (topicEquals(event, _topicVisionEvent)) {
+      handleVisionEvent(event->data, event->data_len);
     }
     break;
 
@@ -303,17 +340,8 @@ void TelemetryService::onMqttEvent(esp_mqtt_event_handle_t event) {
 }
 
 void TelemetryService::handleIncomingCommand(const char *data, int dataLen) {
-  // event->data NIE jest zakonczone '\0' - kopiujemy do lokalnego bufora
-  // przed parsowaniem przez cJSON_Parse (ktore oczekuje C-stringa).
   char buffer[128];
-  int toCopy = (dataLen < static_cast<int>(sizeof(buffer)) - 1)
-                   ? dataLen
-                   : static_cast<int>(sizeof(buffer)) - 1;
-  if (toCopy < 0) {
-    toCopy = 0;
-  }
-  memcpy(buffer, data, toCopy);
-  buffer[toCopy] = '\0';
+  copyPayload(buffer, sizeof(buffer), data, dataLen);
 
   cJSON *root = cJSON_Parse(buffer);
   if (!root) {
@@ -358,5 +386,47 @@ void TelemetryService::handleIncomingCommand(const char *data, int dataLen) {
 
   if (xQueueSend(_commandQueue, &cmd, 0) != pdTRUE) {
     ESP_LOGW(TAG, "commandQueue pelna - komenda '%s' odrzucona", cmdName);
+  }
+}
+
+void TelemetryService::handleVisionEvent(const char *data, int dataLen) {
+  // Format z Raspberry Pi: {"device_id","event","detail"(osoba),
+  // "confidence","timestamp_ms"} - wiekszy niz komendy, stad wiekszy bufor.
+  char buffer[256];
+  copyPayload(buffer, sizeof(buffer), data, dataLen);
+  ESP_LOGI(TAG, "Zdarzenie z kamery: %s", buffer);
+
+  cJSON *root = cJSON_Parse(buffer);
+  if (!root) {
+    ESP_LOGW(TAG, "Niepoprawny JSON z kamery: %s", buffer);
+    return;
+  }
+
+  SystemCommand cmd = {};
+  cmd.id = SystemCommandId::UNKNOWN;
+  cmd.parameter[0] = '\0';
+
+  const cJSON *eventField = cJSON_GetObjectItemCaseSensitive(root, "event");
+  if (cJSON_IsString(eventField) && eventField->valuestring &&
+      strcasecmp(eventField->valuestring, "FACE_RECOGNIZED") == 0) {
+    cmd.id = SystemCommandId::FACE_RECOGNIZED;
+
+    // "detail" moze byc null (Python None) - wtedy parameter zostaje "".
+    const cJSON *detailField = cJSON_GetObjectItemCaseSensitive(root, "detail");
+    if (cJSON_IsString(detailField) && detailField->valuestring) {
+      strncpy(cmd.parameter, detailField->valuestring,
+              sizeof(cmd.parameter) - 1);
+    }
+  }
+
+  cJSON_Delete(root);
+
+  if (cmd.id == SystemCommandId::UNKNOWN) {
+    ESP_LOGI(TAG, "Zdarzenie kamery inne niz FACE_RECOGNIZED - pomijam");
+    return; // inne zdarzenia kamery nie dotycza zamka
+  }
+
+  if (xQueueSend(_commandQueue, &cmd, 0) != pdTRUE) {
+    ESP_LOGW(TAG, "commandQueue pelna - zdarzenie FACE_RECOGNIZED odrzucone");
   }
 }

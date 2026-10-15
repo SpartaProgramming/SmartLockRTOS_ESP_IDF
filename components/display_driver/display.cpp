@@ -11,7 +11,8 @@ Display::Display(spi_host_device_t host, gpio_num_t cs, gpio_num_t dc,
     : _host(host), _cs(cs), _dc(dc), _rst(rst), _width(width), _height(height),
       _isOn(false), _ioHandle(nullptr), _panel(nullptr), _lvDisplay(nullptr),
       _titleLabel(nullptr), _headerLine(nullptr), _line1Label(nullptr),
-      _line2Label(nullptr), _pinStarsLabel(nullptr) {}
+      _line2Label(nullptr), _pinStarsLabel(nullptr), _popup(nullptr),
+      _popupLabel(nullptr), _faceIndicatorLabel(nullptr) {}
 
 Display::~Display() { end(); }
 
@@ -53,7 +54,8 @@ esp_err_t Display::begin() {
   esp_lcd_panel_disp_on_off(_panel, true);
 
   lvgl_port_cfg_t lvglCfg = ESP_LVGL_PORT_INIT_CONFIG();
-  lvglCfg.task_affinity = 1; // rdzen 1 (APP_CPU) - rdzen 0 zarezerwowany dla WiFi
+  lvglCfg.task_affinity =
+      1; // rdzen 1 (APP_CPU) - rdzen 0 zarezerwowany dla WiFi
   err = lvgl_port_init(&lvglCfg);
   if (err != ESP_OK) {
     ESP_LOGE(TAG, "Blad inicjalizacji lvgl_port: %d", err);
@@ -130,8 +132,13 @@ void Display::sleep() {
 void Display::buildWidgets() {
   lvgl_port_lock(0);
 
-  lv_obj_t *scr = lv_disp_get_scr_act(_lvDisplay);
-  lv_obj_set_style_bg_color(scr, lv_color_black(), LV_PART_MAIN);
+  // kolejność tworzenia widgetów ma znaczenie - najpierw tło, potem napisy,
+  // potem pop-up, potem widget
+
+  lv_obj_t *scr = lv_disp_get_scr_act(_lvDisplay); // wskaźnik na aktywn ekran
+  lv_obj_set_style_bg_color(
+      scr, lv_color_black(),
+      LV_PART_MAIN); // LV_PART_MAIN - główna część gdy widget złożony
   lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, LV_PART_MAIN);
 
   _titleLabel = lv_label_create(scr);
@@ -159,14 +166,44 @@ void Display::buildWidgets() {
                               LV_PART_MAIN);
   lv_obj_set_style_text_font(_line2Label, &lv_font_montserrat_16, LV_PART_MAIN);
 
-  // Osobny szablon ekranu wpisywania PIN-u - duza czcionka na gwiazdki,
-  // ukryty domyslnie (widoczny tylko przez showPasswordInput()).
+  // Szablon ekranu wpisywania PIN-u - duza czcionka na gwiazdki,
   _pinStarsLabel = lv_label_create(scr);
   lv_obj_set_pos(_pinStarsLabel, 10, 55);
   lv_obj_set_style_text_color(_pinStarsLabel, lv_color_white(), LV_PART_MAIN);
   lv_obj_set_style_text_font(_pinStarsLabel, &lv_font_montserrat_28,
                              LV_PART_MAIN);
   lv_obj_add_flag(_pinStarsLabel, LV_OBJ_FLAG_HIDDEN);
+
+  // Pop-up - tworzony po szablonach, zeby rysowal sie nad nimi.
+  _popup = lv_obj_create(scr);              // nowy obiekt
+  lv_obj_remove_style_all(_popup);          // usuwa domyślne style wbudowane
+  lv_obj_set_size(_popup, _width - 16, 64); // trochę mniejsze niż ekran
+  lv_obj_align(_popup, LV_ALIGN_CENTER, 0, 8);
+  lv_obj_set_style_bg_color(_popup, lv_color_black(), LV_PART_MAIN);
+  lv_obj_set_style_bg_opa(_popup, LV_OPA_COVER,
+                          LV_PART_MAIN); // nieprzeźroczyste
+  lv_obj_set_style_border_color(_popup, lv_color_hex(0xFF0000), LV_PART_MAIN);
+  lv_obj_set_style_border_width(_popup, 2, LV_PART_MAIN);
+  lv_obj_set_style_radius(_popup, 6, LV_PART_MAIN);
+  lv_obj_clear_flag(_popup, LV_OBJ_FLAG_SCROLLABLE);
+
+  _popupLabel = lv_label_create(_popup);
+  lv_obj_set_style_text_color(_popupLabel, lv_color_hex(0xFF0000),
+                              LV_PART_MAIN);
+  lv_obj_set_style_text_font(_popupLabel, &lv_font_montserrat_16, LV_PART_MAIN);
+  lv_obj_set_style_text_align(_popupLabel, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
+  lv_obj_center(_popupLabel);
+  lv_obj_add_flag(_popup, LV_OBJ_FLAG_HIDDEN);
+
+  // "F" tworzone na samym koncu - zawsze na wierzchu, takze nad pop-upem.
+  _faceIndicatorLabel = lv_label_create(scr);
+  lv_label_set_text(_faceIndicatorLabel, "F");
+  lv_obj_set_style_text_color(_faceIndicatorLabel, lv_color_hex(0xFFFF00),
+                              LV_PART_MAIN);
+  lv_obj_set_style_text_font(_faceIndicatorLabel, &lv_font_montserrat_20,
+                             LV_PART_MAIN);
+  lv_obj_align(_faceIndicatorLabel, LV_ALIGN_TOP_RIGHT, -8, 5);
+  lv_obj_add_flag(_faceIndicatorLabel, LV_OBJ_FLAG_HIDDEN);
 
   lvgl_port_unlock();
 }
@@ -206,9 +243,10 @@ void Display::drawHeader(const char *title) {
  */
 void Display::showIdle(bool locked) {
   if (locked) {
-    applyView("LOCKED", "Enter PIN", "or use card", lv_color_hex(0x00FF00));
+    applyView("LOCKED", "Please look", "at the camera!",
+              lv_color_hex(0x00FF00));
   } else {
-    applyView("OPEN", "", "", lv_color_hex(0x00FF00));
+    applyView("UNLOCKED", "Please close", "the door!", lv_color_hex(0x00FF00));
   }
 }
 
@@ -245,4 +283,32 @@ void Display::showAccessGranted() {
 
 void Display::showAccessDenied() {
   applyView("No Access!", "Try once", "again!", lv_color_hex(0xFF0000));
+}
+
+void Display::showFaceWindow() {
+  applyView("Face OK", "MFA: Enter PIN", "or use card", lv_color_hex(0xFFFF00));
+}
+
+void Display::setFaceIndicator(bool visible) {
+  lvgl_port_lock(0);
+  if (visible) {
+    lv_obj_clear_flag(_faceIndicatorLabel, LV_OBJ_FLAG_HIDDEN);
+  } else {
+    lv_obj_add_flag(_faceIndicatorLabel, LV_OBJ_FLAG_HIDDEN);
+  }
+  lvgl_port_unlock();
+}
+
+void Display::showPopup(const char *text) {
+  lvgl_port_lock(0);
+  lv_label_set_text(_popupLabel, text);
+  lv_obj_center(_popupLabel);
+  lv_obj_clear_flag(_popup, LV_OBJ_FLAG_HIDDEN);
+  lvgl_port_unlock();
+}
+
+void Display::hidePopup() {
+  lvgl_port_lock(0);
+  lv_obj_add_flag(_popup, LV_OBJ_FLAG_HIDDEN);
+  lvgl_port_unlock();
 }

@@ -31,6 +31,8 @@ static const char *kMqttPassword = "12345";
 
 static const char *kMqttBrokerUri = "mqtts://10.0.0.71:8883";
 static const char *kDeviceId = "smartlock01";
+// Raspberry Pi z kamera - publikuje RECOGNIZED na smartlock/<id>/event.
+static const char *kVisionDeviceId = "vision01";
 
 static KeypadLock keypad(Board::Keypad::pins.data());
 static RfidLock rfid(Board::Spi::host, Board::Rfid::cs, Board::Rfid::rst);
@@ -52,7 +54,8 @@ static QueueHandle_t commandQueue = xQueueCreate(5, sizeof(SystemCommand));
 
 static TelemetryService telemetryService(kMqttBrokerUri, kDeviceId,
                                          kMqttUsername, kMqttPassword,
-                                         telemetryQueue, commandQueue);
+                                         telemetryQueue, commandQueue,
+                                         kVisionDeviceId);
 
 static AccessController accessController(keypad, rfid, contactSensor,
                                          presenceSensor, touchSensor,
@@ -61,17 +64,20 @@ static AccessController accessController(keypad, rfid, contactSensor,
                                          commandQueue);
 
 static esp_err_t initSharedSpiBus() {
-  spi_bus_config_t busConfig = {};
+  spi_bus_config_t busConfig = {}; // utwórz pustą strukturę i wyzeruj pola
   busConfig.mosi_io_num = Board::Spi::mosi;
   busConfig.miso_io_num = Board::Spi::miso;
   busConfig.sclk_io_num = Board::Spi::sck;
 
+  // nie używam Quad - write protect i hold;
   busConfig.quadwp_io_num = GPIO_NUM_NC;
   busConfig.quadhd_io_num = GPIO_NUM_NC;
 
   return spi_bus_initialize(Board::Spi::host, &busConfig, SPI_DMA_DISABLED);
 }
 
+// rozwiązanei problemu łączenia C i C++, ESP-IDF napsiany w C, brak mangling;
+// kompilacja według reguł C, aby OS potrafił odnaleźć i uruchomić
 extern "C" void app_main(void) {
   ESP_LOGI(_tag, "Uruchamianie systemu Smart Lock...");
 

@@ -44,9 +44,6 @@ struct UserInfo {
 
 class AccessController {
 public:
-  /// telemetryQueue/commandQueue moga byc nullptr, jesli TelemetryService
-  /// nie jest uzywany w danej konfiguracji - wysylka telemetrii i odbior
-  /// komend zdalnych sa wtedy po prostu pomijane.
   explicit AccessController(KeypadLock &keypad, RfidLock &rfid,
                             ContactSensor &contact, PresenceSensor &presence,
                             TouchSensor &touch, PressureSensor &pressure,
@@ -75,7 +72,7 @@ private:
   AuthResult checkPin(const char *pin);
 
   void grantAccess(const UserInfo *user);
-  void denyAccess();
+  void denyAccess(const char *detail);
   void setState(LockState newState);
 
   void handleContactEvent(bool opened);
@@ -83,31 +80,31 @@ private:
   void handleTouchEvent(bool touched);
   void handlePressureEvent(bool pressed);
 
-  /// Wykonuje komende odebrana zdalnie (MQTT/HA) przez commandQueue.
-  /// LOCK respektuje TA SAMA zasade bezpieczenstwa co reszta systemu -
-  /// nigdy nie zamyka fizycznie zamka, gdy kontaktron pokazuje otwarte
-  /// drzwi (patrz komentarz klasy servo.hpp) - w takim przypadku tylko
-  /// oznacza _wasUnlockedByUs=true, zeby istniejacy, bezpieczny mechanizm
-  /// (handleContactEvent()/doorRelockTimeoutCallback()) zamknal zamek
-  /// automatycznie, gdy drzwi faktycznie sie zamkna.
   void handleRemoteCommand(const SystemCommand &cmd);
 
-  static void denyBlinkTimeoutCallback(void *arg);
+  void handleFaceRecognized(const char *person);
+
+  void closeFaceWindow();
+  /// Proba PIN/karta poza oknem wejscia - pop-up na kFaceErrorPopupSec.
+  void rejectNoFace();
+  /// Budzi ekran i restartuje odliczanie do jego uspienia.
+  void wakeDisplay();
+  /// Ekran spoczynkowy z uwzglednieniem otwartego okna wejscia.
+  void showRestingScreen();
+
+  static void denyBlinkTimeoutCallback(void *arg); // prześlij this
   static void doorRelockTimeoutCallback(void *arg);
   static void presenceSleepTimeoutCallback(void *arg);
   static void touchHoldTimeoutCallback(void *arg);
   static void pinEntryTimeoutCallback(void *arg);
+  static void unlockTimeoutCallback(void *arg);
+  static void faceWindowTimeoutCallback(void *arg);
+  static void faceErrorPopupTimeoutCallback(void *arg);
 
   void resetManualEntry();
+  void startUnlockTimeout();
 
-  /// Wysyla TelemetryMessage(EVENT_LOG) do telemetryQueue (nieblokujaco -
-  /// jesli kolejka jest pelna albo telemetryQueue==nullptr, zdarzenie po
-  /// prostu przepada, z ostrzezeniem w logu). detail moze byc nullptr.
   void sendTelemetryEvent(const char *eventName, const char *detail);
-
-  /// Wysyla TelemetryMessage(STATE_UPDATE) - wolane z setState() dla
-  /// LOCKED/UNLOCKED (AUTHENTICATING pomijamy, bo to stan przejsciowy,
-  /// nie snapshot warty publikacji).
   void sendTelemetryState(bool locked);
 
   KeypadLock &_keypad;
@@ -125,7 +122,8 @@ private:
   SemaphoreHandle_t _stateMutex;
   LockState _state;
 
-  bool _wasUnlockedByUs;
+  bool _wasUnlockedByUs; // został odblokowany PIN/Karta && face, zdalny lock->
+                         // trzeba potem zamknąć zasuwę
 
   esp_timer_handle_t _denyBlinkTimer; // timer do migania czerwona dioda przy
                                       // odrzuceniu dostepu
@@ -136,15 +134,21 @@ private:
   esp_timer_handle_t _touchHoldTimer; // timer do obsługi przytrzymania dotyku
   esp_timer_handle_t
       _pinEntryTimeoutTimer; // timer do limitowania czasu wpisywania PIN-u
+  esp_timer_handle_t
+      _unlockTimeoutTimer; // timer do zamkniecia zasuwy, gdy drzwi nie
+                           // zostaly otwarte po jej zwolnieniu
+  esp_timer_handle_t
+      _faceWindowTimer; // timer zamykajacy okno wejscia po rozpoznaniu twarzy
+  esp_timer_handle_t
+      _faceErrorPopupTimer; // timer chowajacy pop-up "nie rozpoznano twarzy"
 
   // Ustawiany na czas wpisywania PIN-u aby zostać przy tym ekranie.
   bool _pinEntryActive;
 
-  /// OUT - do TelemetryService (rdzen 0). Moze byc nullptr - patrz
-  /// konstruktor.
+  // true = twarz rozpoznana, PIN/karta sa akceptowane (okno wejscia).
+  bool _faceWindowActive;
+
   QueueHandle_t _telemetryQueue;
 
-  /// IN - komendy zdalne (MQTT/HA) z TelemetryService. Odczytywana
-  /// nieblokujaco w taskLoop(). Moze byc nullptr - patrz konstruktor.
   QueueHandle_t _commandQueue;
 };

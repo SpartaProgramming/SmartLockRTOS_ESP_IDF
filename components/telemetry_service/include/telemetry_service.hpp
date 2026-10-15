@@ -20,7 +20,8 @@ public:
   explicit TelemetryService(const char *brokerUri, const char *deviceId,
                             const char *mqttUsername, const char *mqttPassword,
                             QueueHandle_t telemetryQueue,
-                            QueueHandle_t commandQueue);
+                            QueueHandle_t commandQueue,
+                            const char *visionDeviceId = nullptr);
   ~TelemetryService();
 
   TelemetryService(const TelemetryService &) = delete;
@@ -44,6 +45,9 @@ private:
   void publishDiagnostics();
   void publishEvent(const TelemetryMessage &msg);
   void handleIncomingCommand(const char *data, int dataLen);
+  /// Zdarzenia z kamery (smartlock/<vision_id>/event) - "FACE_RECOGNIZED"
+  /// zamieniamy na SystemCommandId::FACE_RECOGNIZED w commandQueue.
+  void handleVisionEvent(const char *data, int dataLen);
 
   void publishJson(const char *topic, cJSON *root, int qos, int retain);
 
@@ -56,6 +60,7 @@ private:
   char _topicEvent[64];
   char _topicDiagnostics[64];
   char _topicCommand[64];
+  char _topicVisionEvent[64]; // "" = brak kamery, nie subskrybujemy
 
   char _mqttUsername[33];
   char _mqttPassword[65];

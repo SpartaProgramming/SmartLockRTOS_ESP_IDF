@@ -49,6 +49,9 @@ enum class SystemCommandId : uint8_t {
   UNLOCK,
   LOCK,
   REBOOT,
+  /// Kamera (Raspberry Pi, topic smartlock/<vision_id>/event) rozpoznala
+  /// twarz - parameter = imie rozpoznanej osoby (pole "detail" z JSON-a).
+  FACE_RECOGNIZED,
   UNKNOWN, ///< nierozpoznana/niepoprawna komenda - nigdy nie trafia do kolejki
 };
 

@@ -206,10 +206,8 @@ void WifiManager::onWifiEvent(esp_event_base_t base, int32_t id, void *data) {
     if (_notifyTask) {
       xTaskNotify(_notifyTask, AccessEvents::kWifiDisconnected, eSetBits);
     }
-    // Event handler dziala w kontekscie systemowego taska event-loop - nie
-    // wolamy tu esp_wifi_connect() bezposrednio, tylko budzimy dedykowany
-    // task rekonekcji, zeby backoff mial gdzie "zyc" (vTaskDelay).
     xSemaphoreGive(_reconnectSignal);
+
   } else if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
     auto *event = static_cast<ip_event_got_ip_t *>(data);
     xSemaphoreTake(_stateMutex, portMAX_DELAY);
@@ -252,8 +250,6 @@ void WifiManager::reconnectTaskLoop() {
     if (err != ESP_OK && err != ESP_ERR_WIFI_CONN) {
       ESP_LOGW(TAG, "esp_wifi_connect nieudane (%d) - kolejna proba po backoff",
                err);
-      // WIFI_EVENT_STA_DISCONNECTED moze nie nadejsc ponownie, jesli
-      // connect() od razu zwrocil blad - sami planujemy kolejna probe.
       xSemaphoreGive(_reconnectSignal);
     }
   }

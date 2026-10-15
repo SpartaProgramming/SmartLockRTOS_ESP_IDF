@@ -3,6 +3,7 @@
 #include <climits>
 #include <cstdio>
 #include <cstring>
+#include <strings.h>
 
 #include <esp_log.h>
 #include <esp_system.h>
@@ -11,44 +12,60 @@
 
 static const char *TAG = "AccessController";
 
+// Google C++ Style Giude - stałe globalne lub tablicowe z k, zmienne
+// członkowskie z _
 static const UserInfo kUsers[] = {
     {"Michal", "Zawada", "4A697280"},
     {"Anna", "Zawada", "11223344"},
     {"Agata", "Sinkiewicz", "96502AF9"},
 };
-static constexpr size_t kUserCount = sizeof(kUsers) / sizeof(kUsers[0]);
+static constexpr size_t kUserCount =
+    sizeof(kUsers) / sizeof(kUsers[0]); // ile wpisów w tablicy kUsers
 
 static const char *kMasterPin = "12345";
+static const char *kFaceAuthorizedPerson =
+    "Michal"; // tylko ja moge wejsc do systemu po rozpoznaniu twarzy
 
 namespace {
-constexpr int kDenyBlinkDurationSec = 5;
-constexpr uint32_t kDenyBlinkIntervalMs = 200;
-constexpr int kDoorRelockDelaySec = 2;
+constexpr int kDenyBlinkDurationSec =
+    5; // czas migania czerwonej diody po odrzuceniu dostepu
+constexpr uint32_t kDenyBlinkIntervalMs =
+    200; // jak czesto miga czerwona dioda przy odrzuceniu dostepu
+constexpr int kDoorRelockDelaySec =
+    2; // czas po fizycznym zamknięciu drzwi, po którym zasuwa zostaje zamknięta
+       // automatycznie
+constexpr int kUnlockTimeoutSec =
+    10; // zasuwa zwolniona, ale drzwi nie otwarte -> zamknij ponownie
+constexpr bool kDisplaySleepEnabled =
+    false; // false = ekran nigdy nie zasypia po braku ruchu
 constexpr int kPresenceSleepTimeoutSec = 20;
 constexpr int kTouchHoldThresholdSec = 2;
 constexpr int kPinEntryTimeoutSec =
-    10; // brak nowego znaku -> czysc i wroc do idle
+    10; // przerwa w pisywaniu PIN - reset bufora i powrot do ekranu
+        // spoczynkowego
 constexpr uint32_t kCommandPollIntervalMs =
     200; // jak czesto sprawdzamy commandQueue miedzy powiadomieniami
 constexpr int kRebootDelayMs =
     1000; // czas na wyslanie telemetrii przed restartem
+constexpr int kFaceWindowSec =
+    20; // po rozpoznaniu twarzy tyle czasu na PIN/karte
+constexpr int kFaceErrorPopupSec = 4;
 } // namespace
 
-AccessController::AccessController(KeypadLock &keypad, RfidLock &rfid,
-                                   ContactSensor &contact,
-                                   PresenceSensor &presence, TouchSensor &touch,
-                                   PressureSensor &pressure, ServoMotor &servo,
-                                   Display &display, SmartLed &ledGreen,
-                                   SmartLed &ledRed,
-                                   QueueHandle_t telemetryQueue,
-                                   QueueHandle_t commandQueue)
+AccessController::AccessController(
+    KeypadLock &keypad, RfidLock &rfid, ContactSensor &contact,
+    PresenceSensor &presence, TouchSensor &touch, PressureSensor &pressure,
+    ServoMotor &servo, Display &display, SmartLed &ledGreen, SmartLed &ledRed,
+    QueueHandle_t telemetryQueue, QueueHandle_t commandQueue)
     : _keypad(keypad), _rfid(rfid), _contact(contact), _presence(presence),
       _touch(touch), _pressure(pressure), _servo(servo), _display(display),
       _ledGreen(ledGreen), _ledRed(ledRed), _taskHandle(nullptr),
       _stateMutex(nullptr), _state(LockState::LOCKED), _wasUnlockedByUs(false),
       _denyBlinkTimer(nullptr), _doorRelockTimer(nullptr),
       _presenceSleepTimer(nullptr), _touchHoldTimer(nullptr),
-      _pinEntryTimeoutTimer(nullptr), _pinEntryActive(false),
+      _pinEntryTimeoutTimer(nullptr), _unlockTimeoutTimer(nullptr),
+      _faceWindowTimer(nullptr), _faceErrorPopupTimer(nullptr),
+      _pinEntryActive(false), _faceWindowActive(false),
       _telemetryQueue(telemetryQueue), _commandQueue(commandQueue) {
   _stateMutex = xSemaphoreCreateMutex();
 }
@@ -60,6 +77,7 @@ AccessController::~AccessController() {
   }
 }
 
+// funkcja tworzy timery jednorazowe wywołujące callback
 namespace {
 esp_err_t createOneShotTimer(esp_timer_cb_t callback, void *arg,
                              const char *name, esp_timer_handle_t *out) {
@@ -74,13 +92,15 @@ esp_err_t createOneShotTimer(esp_timer_cb_t callback, void *arg,
 
 esp_err_t AccessController::begin() {
   // Rdzen 1 (APP_CPU) - rdzen 0 zarezerwowany dla WiFi.
-  BaseType_t ok = xTaskCreatePinnedToCore(
-      taskThunk, "access_controller_task", 4096, this, 5, &_taskHandle, 1);
+  BaseType_t ok = xTaskCreatePinnedToCore(taskThunk, "access_controller_task",
+                                          4096, this, 5, &_taskHandle, 1);
   if (ok != pdPASS) {
     ESP_LOGE(TAG, "Nie udalo sie utworzyc taska AccessController");
     return ESP_ERR_NO_MEM;
   }
 
+  // Rejestracja w komponantach uchwytu AccessController do powiadamiania go o
+  // zdarzeniach
   _keypad.attachNotifyTask(_taskHandle);
   _rfid.attachNotifyTask(_taskHandle);
   _contact.attachNotifyTask(_taskHandle);
@@ -89,7 +109,8 @@ esp_err_t AccessController::begin() {
   _pressure.attachNotifyTask(_taskHandle);
 
   esp_err_t err;
-  err = createOneShotTimer(&AccessController::denyBlinkTimeoutCallback, this,
+  err = createOneShotTimer(&AccessController::denyBlinkTimeoutCallback,
+                           this, // po odliczeniu czasu, wywołaj autoamtycznie
                            "ac_deny_blink", &_denyBlinkTimer);
   if (err != ESP_OK) {
     ESP_LOGE(TAG, "Blad tworzenia timera denyBlink: %d", err);
@@ -113,6 +134,21 @@ esp_err_t AccessController::begin() {
                            "ac_pin_entry", &_pinEntryTimeoutTimer);
   if (err != ESP_OK) {
     ESP_LOGE(TAG, "Blad tworzenia timera pinEntry: %d", err);
+  }
+  err = createOneShotTimer(&AccessController::unlockTimeoutCallback, this,
+                           "ac_unlock_timeout", &_unlockTimeoutTimer);
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG, "Blad tworzenia timera unlockTimeout: %d", err);
+  }
+  err = createOneShotTimer(&AccessController::faceWindowTimeoutCallback, this,
+                           "ac_face_window", &_faceWindowTimer);
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG, "Blad tworzenia timera faceWindow: %d", err);
+  }
+  err = createOneShotTimer(&AccessController::faceErrorPopupTimeoutCallback,
+                           this, "ac_face_popup", &_faceErrorPopupTimer);
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG, "Blad tworzenia timera faceErrorPopup: %d", err);
   }
 
   ESP_LOGI(TAG, "AccessController zainicjalizowany");
@@ -149,6 +185,21 @@ void AccessController::end() {
     esp_timer_delete(_pinEntryTimeoutTimer);
     _pinEntryTimeoutTimer = nullptr;
   }
+  if (_unlockTimeoutTimer) {
+    esp_timer_stop(_unlockTimeoutTimer);
+    esp_timer_delete(_unlockTimeoutTimer);
+    _unlockTimeoutTimer = nullptr;
+  }
+  if (_faceWindowTimer) {
+    esp_timer_stop(_faceWindowTimer);
+    esp_timer_delete(_faceWindowTimer);
+    _faceWindowTimer = nullptr;
+  }
+  if (_faceErrorPopupTimer) {
+    esp_timer_stop(_faceErrorPopupTimer);
+    esp_timer_delete(_faceErrorPopupTimer);
+    _faceErrorPopupTimer = nullptr;
+  }
 }
 
 LockState AccessController::getState() const {
@@ -182,15 +233,19 @@ void AccessController::taskLoop() {
     // Timeout ograniczony (nie portMAX_DELAY) - dzieki temu petla co
     // kCommandPollIntervalMs wraca i sprawdza commandQueue (komendy
     // zdalne z MQTT/HA), nawet gdy zaden czujnik nic nie zglasza.
-    BaseType_t notified =
-        xTaskNotifyWait(0, ULONG_MAX, &notifiedValue,
-                        pdMS_TO_TICKS(kCommandPollIntervalMs));
+    BaseType_t notified = xTaskNotifyWait(
+        0, ULONG_MAX, &notifiedValue, pdMS_TO_TICKS(kCommandPollIntervalMs));
 
     if (notified != pdTRUE) {
       notifiedValue = 0;
     }
 
-    if (notifiedValue & static_cast<uint32_t>(KeypadEvent::KEY_PRESSED)) {
+    // PIN i karta dzialaja tylko w oknie wejscia (po rozpoznaniu twarzy).
+    if ((notifiedValue & static_cast<uint32_t>(KeypadEvent::KEY_PRESSED)) &&
+        !_faceWindowActive) {
+      rejectNoFace();
+    } else if (notifiedValue &
+               static_cast<uint32_t>(KeypadEvent::KEY_PRESSED)) {
       char pin[KeypadLock::kMaxPinLen + 1];
       size_t len = _keypad.getBuffer(pin, sizeof(pin));
       _pinEntryActive = true;
@@ -205,7 +260,10 @@ void AccessController::taskLoop() {
       }
     }
 
-    if (notifiedValue & static_cast<uint32_t>(KeypadEvent::CONFIRMED)) {
+    if ((notifiedValue & static_cast<uint32_t>(KeypadEvent::CONFIRMED)) &&
+        !_faceWindowActive) {
+      rejectNoFace();
+    } else if (notifiedValue & static_cast<uint32_t>(KeypadEvent::CONFIRMED)) {
       char pin[KeypadLock::kMaxPinLen + 1];
       _keypad.getBuffer(pin, sizeof(pin));
       _keypad.clearBuffer();
@@ -214,17 +272,22 @@ void AccessController::taskLoop() {
       if (checkPin(pin) == AuthResult::SUCCESS) {
         grantAccess(nullptr);
       } else {
-        denyAccess();
+        denyAccess("PIN");
       }
     }
 
     if (notifiedValue & static_cast<uint32_t>(KeypadEvent::CANCELLED)) {
       ESP_LOGI(TAG, "Wprowadzanie PINu anulowane");
       resetManualEntry();
-      _display.showPasswordInput(0);
+      if (_faceWindowActive) {
+        _display.showPasswordInput(0);
+      }
     }
 
-    if (notifiedValue & static_cast<uint32_t>(RfidEvent::CARD_PRESENT)) {
+    if ((notifiedValue & static_cast<uint32_t>(RfidEvent::CARD_PRESENT)) &&
+        !_faceWindowActive) {
+      rejectNoFace();
+    } else if (notifiedValue & static_cast<uint32_t>(RfidEvent::CARD_PRESENT)) {
       char uid[RfidLock::kUidHexLen + 1];
       _rfid.getUid(uid, sizeof(uid));
 
@@ -233,7 +296,7 @@ void AccessController::taskLoop() {
       if (checkUid(uid, &user) == AuthResult::SUCCESS) {
         grantAccess(user);
       } else {
-        denyAccess();
+        denyAccess(uid);
       }
     }
 
@@ -304,6 +367,7 @@ AuthResult AccessController::checkPin(const char *pin) {
 
 void AccessController::grantAccess(const UserInfo *user) {
   resetManualEntry();
+  closeFaceWindow(); // okno jednorazowe - kolejne wejscie wymaga nowej twarzy
 
   if (user) {
     ESP_LOGI(TAG, "Dostep przyznany: %s %s", user->firstName, user->lastName);
@@ -323,16 +387,15 @@ void AccessController::grantAccess(const UserInfo *user) {
   _ledRed.turnOff();
   _wasUnlockedByUs = true;
   setState(LockState::UNLOCKED);
+  startUnlockTimeout();
 }
 
-void AccessController::denyAccess() {
+void AccessController::denyAccess(const char *detail) {
   resetManualEntry();
 
-  ESP_LOGW(TAG, "Dostep odrzucony - migam %ds, potem czerwona na stale",
-           kDenyBlinkDurationSec);
   _display.showAccessDenied();
   _ledRed.blink(kDenyBlinkIntervalMs);
-  sendTelemetryEvent("ACCESS_DENIED", "");
+  sendTelemetryEvent("ACCESS_DENIED", detail);
 
   if (_denyBlinkTimer) {
     esp_timer_stop(_denyBlinkTimer);
@@ -345,16 +408,25 @@ void AccessController::denyAccess() {
 }
 
 void AccessController::denyBlinkTimeoutCallback(void *arg) {
-  AccessController *self = static_cast<AccessController *>(arg);
+  AccessController *self = static_cast<AccessController *>(
+      arg); // metoda statyczna nie jest związana z konkretną instancją klasy,
+            // więc przekazujemy wskaźnik na obiekt
   self->_ledRed.turnOn();
 }
 
 void AccessController::handleContactEvent(bool opened) {
   if (opened) {
-    ESP_LOGI(TAG, "Drzwi otwarte");
-    sendTelemetryEvent("DOOR_OPENED", "");
+    if (_wasUnlockedByUs) {
+      ESP_LOGI(TAG, "Drzwi otwarte");
+      sendTelemetryEvent("DOOR_OPENED", "AUTHORIZED");
+    } else {
+      ESP_LOGW(TAG, "Drzwi otwarte bez zwolnienia zasuwy!");
+      sendTelemetryEvent("DOOR_OPENED", "FORCED");
+    }
+    if (_unlockTimeoutTimer) {
+      esp_timer_stop(_unlockTimeoutTimer);
+    }
     if (_doorRelockTimer) {
-      // Drzwi znow otwarte - anuluj oczekujace zamkniecie zasuwy.
       esp_timer_stop(_doorRelockTimer);
     }
     return;
@@ -380,6 +452,7 @@ void AccessController::doorRelockTimeoutCallback(void *arg) {
   self->_wasUnlockedByUs = false;
   self->setState(LockState::LOCKED);
   self->_display.showIdle(true);
+  self->sendTelemetryEvent("LOCKED", "AUTO");
 }
 
 void AccessController::handlePresenceEvent(bool detected) {
@@ -387,17 +460,29 @@ void AccessController::handlePresenceEvent(bool detected) {
     return;
   }
   ESP_LOGI(TAG, "Wykryto ruch (PIR) - wybudzam ekran");
-  _display.wakeUp();
+  sendTelemetryEvent("MOTION_DETECTED", "");
+  wakeDisplay();
   if (!_pinEntryActive) {
-    _display.showIdle(getState() == LockState::LOCKED);
+    showRestingScreen();
   }
+}
 
-  if (_presenceSleepTimer) {
-
+void AccessController::wakeDisplay() {
+  _display.wakeUp();
+  if (kDisplaySleepEnabled && _presenceSleepTimer) {
     esp_timer_stop(_presenceSleepTimer);
     esp_timer_start_once(_presenceSleepTimer,
                          static_cast<uint64_t>(kPresenceSleepTimeoutSec) *
                              1000000ULL);
+  }
+}
+
+void AccessController::showRestingScreen() {
+  bool locked = getState() == LockState::LOCKED;
+  if (_faceWindowActive && locked) {
+    _display.showFaceWindow();
+  } else {
+    _display.showIdle(locked);
   }
 }
 
@@ -438,6 +523,7 @@ void AccessController::touchHoldTimeoutCallback(void *arg) {
   self->setState(LockState::UNLOCKED);
   self->_display.showIdle(false);
   self->sendTelemetryEvent("ACCESS_GRANTED", "TOUCH");
+  self->startUnlockTimeout();
 }
 
 void AccessController::handlePressureEvent(bool pressed) {
@@ -455,7 +541,32 @@ void AccessController::pinEntryTimeoutCallback(void *arg) {
   AccessController *self = static_cast<AccessController *>(arg);
   ESP_LOGI(TAG, "Brak nowego znaku przez %ds", kPinEntryTimeoutSec);
   self->resetManualEntry();
-  self->_display.showIdle(self->getState() == LockState::LOCKED);
+  self->showRestingScreen();
+}
+
+void AccessController::startUnlockTimeout() {
+  if (_unlockTimeoutTimer) {
+    esp_timer_stop(_unlockTimeoutTimer);
+    esp_timer_start_once(_unlockTimeoutTimer,
+                         static_cast<uint64_t>(kUnlockTimeoutSec) * 1000000ULL);
+  }
+}
+
+void AccessController::unlockTimeoutCallback(void *arg) {
+  AccessController *self = static_cast<AccessController *>(arg);
+  if (!self->_wasUnlockedByUs || self->_contact.isOpen()) {
+    // Juz zamkniete innym torem albo drzwi otwarte - nie ruszamy zasuwy.
+    return;
+  }
+  ESP_LOGI(TAG, "Drzwi nie otwarte przez %ds - zamykam zasuwe",
+           kUnlockTimeoutSec);
+  self->_servo.close();
+  self->_ledGreen.turnOff();
+  self->_ledRed.turnOn();
+  self->_wasUnlockedByUs = false;
+  self->setState(LockState::LOCKED);
+  self->_display.showIdle(true);
+  self->sendTelemetryEvent("LOCKED", "TIMEOUT");
 }
 
 void AccessController::resetManualEntry() {
@@ -478,12 +589,8 @@ void AccessController::sendTelemetryEvent(const char *eventName,
   strncpy(msg.eventName, eventName, sizeof(msg.eventName) - 1);
   strncpy(msg.eventDetail, detail ? detail : "", sizeof(msg.eventDetail) - 1);
 
-  // Nieblokujaco (timeout=0) - AccessController nigdy nie czeka na
-  // TelemetryService; jesli kolejka jest pelna, zdarzenie przepada z
-  // ostrzezeniem zamiast zaciac task obslugujacy zamek.
   if (xQueueSend(_telemetryQueue, &msg, 0) != pdTRUE) {
-    ESP_LOGW(TAG, "telemetryQueue pelna - zdarzenie '%s' pominiete",
-             eventName);
+    ESP_LOGW(TAG, "telemetryQueue pelna - zdarzenie '%s' pominiete", eventName);
   }
 }
 
@@ -499,17 +606,13 @@ void AccessController::handleRemoteCommand(const SystemCommand &cmd) {
     _wasUnlockedByUs = true;
     setState(LockState::UNLOCKED);
     sendTelemetryEvent("ACCESS_GRANTED", "REMOTE");
+    startUnlockTimeout();
     break;
   }
 
   case SystemCommandId::LOCK: {
     ESP_LOGI(TAG, "Komenda zdalna: LOCK");
     if (_contact.isOpen()) {
-      // Bezpieczenstwo: NIGDY nie zamykamy zamka na fizycznie otwartych
-      // drzwiach (patrz komentarz klasy w servo.hpp) - oznaczamy tylko
-      // "zostalo odblokowane" tak, zeby istniejacy, bezpieczny mechanizm
-      // (handleContactEvent()/doorRelockTimeoutCallback()) zamknal zamek
-      // sam, gdy drzwi faktycznie sie zamkna.
       ESP_LOGW(TAG, "LOCK odroczone - drzwi otwarte, zamknie sie "
                     "automatycznie po ich zamknieciu");
       _wasUnlockedByUs = true;
@@ -534,13 +637,86 @@ void AccessController::handleRemoteCommand(const SystemCommand &cmd) {
     break;
   }
 
+  case SystemCommandId::FACE_RECOGNIZED:
+    handleFaceRecognized(cmd.parameter);
+    break;
+
   case SystemCommandId::UNKNOWN:
   default:
-    // TelemetryService juz odfiltrowuje nierozpoznane komendy przed
-    // wystawieniem ich do commandQueue - to tylko zabezpieczenie.
     ESP_LOGW(TAG, "Nieznana komenda zdalna - ignoruje");
     break;
   }
+}
+
+void AccessController::handleFaceRecognized(const char *person) {
+  if (strcasecmp(person, kFaceAuthorizedPerson) != 0) {
+    ESP_LOGW(TAG, "Kamera rozpoznala '%s' - brak uprawnien, ignoruje", person);
+    return;
+  }
+
+  ESP_LOGI(TAG, "Rozpoznano twarz: %s - okno wejscia na %ds", person,
+           kFaceWindowSec);
+  _faceWindowActive = true;
+  if (_faceWindowTimer) {
+    // Kolejne rozpoznanie w trakcie okna przedluza je od nowa.
+    esp_timer_stop(_faceWindowTimer);
+    esp_timer_start_once(_faceWindowTimer,
+                         static_cast<uint64_t>(kFaceWindowSec) * 1000000ULL);
+  }
+  if (_faceErrorPopupTimer) {
+    esp_timer_stop(_faceErrorPopupTimer);
+  }
+
+  wakeDisplay();
+  _display.hidePopup();
+  _display.setFaceIndicator(true); // włącza flagę "F"
+  if (!_pinEntryActive) {
+    showRestingScreen();
+  }
+  sendTelemetryEvent("FACE_WINDOW_OPEN", person);
+}
+
+void AccessController::closeFaceWindow() {
+  _faceWindowActive = false;
+  if (_faceWindowTimer) {
+    esp_timer_stop(_faceWindowTimer);
+  }
+  _display.setFaceIndicator(false);
+}
+
+void AccessController::faceWindowTimeoutCallback(void *arg) {
+  AccessController *self = static_cast<AccessController *>(arg);
+  ESP_LOGI(TAG, "Okno wejscia (%ds) minelo - czekam na kolejne rozpoznanie",
+           kFaceWindowSec);
+  self->closeFaceWindow();
+  if (!self->_pinEntryActive) {
+    self->showRestingScreen();
+  }
+}
+
+void AccessController::rejectNoFace() {
+  resetManualEntry();
+  wakeDisplay();
+  showRestingScreen();
+  _display.showPopup("Face not\nrecognized!");
+
+  bool alreadyShown =
+      _faceErrorPopupTimer && esp_timer_is_active(_faceErrorPopupTimer);
+  if (!alreadyShown) {
+    ESP_LOGW(TAG, "Proba odblokowania bez rozpoznanej twarzy");
+    sendTelemetryEvent("ACCESS_DENIED", "NO_FACE");
+  }
+
+  if (_faceErrorPopupTimer) {
+    esp_timer_stop(_faceErrorPopupTimer);
+    esp_timer_start_once(_faceErrorPopupTimer,
+                         static_cast<uint64_t>(kFaceErrorPopupSec) *
+                             1000000ULL);
+  }
+}
+
+void AccessController::faceErrorPopupTimeoutCallback(void *arg) {
+  static_cast<AccessController *>(arg)->_display.hidePopup();
 }
 
 void AccessController::sendTelemetryState(bool locked) {
