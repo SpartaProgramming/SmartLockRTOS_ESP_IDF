@@ -31,7 +31,6 @@ static const char *kMqttPassword = "12345";
 
 static const char *kMqttBrokerUri = "mqtts://10.0.0.71:8883";
 static const char *kDeviceId = "smartlock01";
-// Raspberry Pi z kamera - publikuje RECOGNIZED na smartlock/<id>/event.
 static const char *kVisionDeviceId = "vision01";
 
 static KeypadLock keypad(Board::Keypad::pins.data());

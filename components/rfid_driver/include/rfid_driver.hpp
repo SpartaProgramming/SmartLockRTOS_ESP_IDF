@@ -16,33 +16,13 @@ extern "C" {
 #include "rc522_picc.h"
 }
 
-/**
- * @brief Bity przekazywane przez xTaskNotify(..., eSetBits) do
- * zarejestrowanego taska (poprzez attachNotifyTask). To bity 2-3 - patrz
- * komentarz w keypad_driver.hpp (bity 0-1 to KeypadEvent). Jesli ten sam
- * task odbiera powiadomienia z obu driverow naraz, sprawdzajcie kazdy bit
- * osobno (nie jednym switch), bo eSetBits SUMUJE bitowo (OR), nie
- * nadpisuje. Wywolujcie xTaskNotifyWait z ulBitsToClearOnExit=ULONG_MAX,
- * zeby wyczyscic wszystko po odczycie.
- */
 enum class RfidEvent : uint32_t {
   NONE = 0,
-  CARD_PRESENT = 1u << 2, ///< karta wykryta i aktywna - UID dostepny przez getUid()
+  CARD_PRESENT =
+      1u << 2, ///< karta wykryta i aktywna - UID dostepny przez getUid()
   CARD_REMOVED = 1u << 3, ///< karta zostala odsunieta od czytnika
 };
 
-/**
- * @brief RfidLock NIE inicjalizuje ani nie zwalnia magistrali SPI - zaklada,
- * ze kod wywolujacy (main.cpp) juz wywolal spi_bus_initialize(host, ...)
- * PRZED begin(), zeby magistrala mogla byc dzielona z innymi urzadzeniami
- * (kazde urzadzenie na tej magistrali robi tylko spi_bus_add_device, nie
- * wlasna inicjalizacje). Wewnetrznie dzieje sie to przez ustawienie
- * rc522_spi_config_t::bus_config = nullptr - biblioteka rc522 jawnie
- * sprawdza ten warunek (rc522_spi_install/uninstall w
- * managed_components/abobija__rc522/src/driver/rc522_spi.c) i wtedy
- * pomija spi_bus_initialize()/spi_bus_free(), robiac tylko
- * spi_bus_add_device()/spi_bus_remove_device() dla wlasnego CS.
- */
 class RfidLock {
 public:
   static constexpr size_t kUidHexLen = RC522_PICC_UID_SIZE_MAX * 2;

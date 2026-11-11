@@ -12,15 +12,6 @@ extern "C" {
 #include "keypad.h"
 }
 
-/**
- * @brief Bity przekazywane przez xTaskNotify(..., eSetBits) do
- * zarejestrowanego taska (poprzez attachNotifyTask). To bity 0-1 - jesli ten
- * sam task odbiera tez powiadomienia z innego zrodla (np. RfidLock, ktory
- * uzywa bitow 2-3), obydwa moga przyjsc naraz w jednej wartosci zwroconej
- * przez xTaskNotifyWait - sprawdzajcie kazdy bit osobno (nie jednym switch),
- * bo eSetBits SUMUJE bitowo (OR), nie nadpisuje. Wywolujcie xTaskNotifyWait z
- * ulBitsToClearOnExit=ULONG_MAX, zeby wyczyscic wszystko po odczycie.
- */
 enum class KeypadEvent : uint32_t {
   NONE = 0,
   CONFIRMED = 1u << 0, ///< uzytkownik wcisnal '#' - PIN gotowy do odczytu

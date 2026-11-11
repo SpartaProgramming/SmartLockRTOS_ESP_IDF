@@ -90,8 +90,6 @@ void KeypadLock::taskLoop() {
         xTaskNotify(_notifyTask, static_cast<uint32_t>(KeypadEvent::CONFIRMED),
                     eSetBits);
       }
-      // Bufor NIE jest tu czyszczony - to AccessController decyduje kiedy
-      // wywolac clearBuffer(), po odczytaniu i zweryfikowaniu PINu.
     } else if (key == '*') {
       ESP_LOGI(TAG, "Wprowadzanie anulowane");
       clearBuffer();

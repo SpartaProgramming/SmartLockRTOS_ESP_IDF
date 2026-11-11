@@ -16,7 +16,7 @@ SmartLed::SmartLed(gpio_num_t pin)
   if (_commandQueue == nullptr) {
     ESP_LOGE(kTag, "Failed to create command queue");
   }
-  // Rdzen 1 (APP_CPU) - rdzen 0 zarezerwowany dla WiFi.
+
   if (xTaskCreatePinnedToCore(taskThunk, "smart_led_task", 2048, this, 5,
                               &_taskHandle, 1) != pdPASS) {
     ESP_LOGE(kTag, "Failed to create task");
