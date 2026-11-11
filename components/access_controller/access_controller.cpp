@@ -1,5 +1,4 @@
 #include "access_controller.hpp"
-
 #include <climits>
 #include <cstdio>
 #include <cstring>
@@ -8,23 +7,16 @@
 #include <esp_log.h>
 #include <esp_system.h>
 
+#include "secrets.hpp" // kUsers, kMasterPin, kFaceAuthorizedPerson
 #include "telemetry_types.hpp"
 
 static const char *TAG = "AccessController";
 
-// Google C++ Style Giude - stałe globalne lub tablicowe z k, zmienne
-// członkowskie z _
-static const UserInfo kUsers[] = {
-    {"Michal", "Zawada", "4A697280"},
-    {"Anna", "Zawada", "11223344"},
-    {"Agata", "Sinkiewicz", "96502AF9"},
-};
-static constexpr size_t kUserCount =
-    sizeof(kUsers) / sizeof(kUsers[0]); // ile wpisów w tablicy kUsers
-
-static const char *kMasterPin = "12345";
 static const char *kFaceAuthorizedPerson =
     "Michal"; // tylko ja moge wejsc do systemu po rozpoznaniu twarzy
+
+static constexpr size_t kUserCount =
+    sizeof(kUsers) / sizeof(kUsers[0]); // ile wpisów w tablicy kUsers
 
 namespace {
 constexpr int kDenyBlinkDurationSec =

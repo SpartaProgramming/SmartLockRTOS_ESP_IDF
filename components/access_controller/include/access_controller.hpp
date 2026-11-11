@@ -20,6 +20,7 @@
 #include "smart_led.hpp"
 #include "telemetry_types.hpp"
 #include "touch_sensor.hpp"
+#include "user_info.hpp"
 
 enum class LockState {
   LOCKED,
@@ -31,15 +32,6 @@ enum class AuthResult {
   NONE,
   SUCCESS,
   FAIL,
-};
-
-/**
- * @brief Dane uzytkownika uprawnionego do otwarcia zamka.
- */
-struct UserInfo {
-  const char *firstName;
-  const char *lastName;
-  const char *uid;
 };
 
 class AccessController {

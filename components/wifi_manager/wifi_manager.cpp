@@ -8,6 +8,13 @@
 
 #include "access_events.hpp"
 
+#if __has_include("secrets.hpp") // sprawdza czy plik nagłówkowy istnieje i może
+                                 // być dołączony
+#else
+#error                                                                         \
+    "Brak main/secrets.hpp - skopiuj secrets.example.h jako secrets.hpp i uzupelnij"
+#endif
+
 static const char *TAG = "WifiManager";
 
 bool WifiManager::s_instanceExists = false;

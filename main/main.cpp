@@ -9,9 +9,11 @@
 #include "freertos/task.h"
 #include "keypad_driver.hpp"
 #include "nvs_flash.h"
+#include "pin_config.hpp"
 #include "presence_sensor.hpp"
 #include "pressure_sensor.hpp"
 #include "rfid_driver.hpp"
+#include "secrets.hpp"
 #include "servo.hpp"
 #include "smart_led.hpp"
 #include "telemetry_service.hpp"
@@ -19,15 +21,7 @@
 #include "wifi_manager.hpp"
 #include <driver/spi_master.h>
 
-#include "pin_config.hpp"
-
 static const char *_tag = "SmartLockMain";
-
-static const char *kWifiSsid = "WiezaWawrzyny2.4G";
-static const char *kWifiPassword = "Wawrzyny19";
-
-static const char *kMqttUsername = "mqtt";
-static const char *kMqttPassword = "12345";
 
 static const char *kMqttBrokerUri = "mqtts://10.0.0.71:8883";
 static const char *kDeviceId = "smartlock01";
